@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Cabalou — Espace marketing",
+  title: "Cabalou",
   description: "Espace marketing local de Cabalou. Les contenus restent des brouillons jusqu’à leur validation.",
 };
 
