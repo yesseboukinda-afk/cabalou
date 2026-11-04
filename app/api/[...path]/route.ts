@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  assertSameOrigin, authenticate, checkLoginRateLimit, clearLoginFailures, createSession,
-  getSessionFromRequest, HttpError, requireRole, requireSession, setSessionCookie,
+  ACCESS_COOKIE_NAME, assertSameOrigin, authenticate, checkLoginRateLimit, clearLoginFailures, COOKIE_NAME, createSession,
+  getSessionFromRequest, HttpError, REFRESH_COOKIE_NAME, requireRole, requireSession, setSessionCookie,
   clearSessionCookie, recordLoginFailure, ROLES_CAN_EDIT, type User,
 } from "../../../lib/security";
 import {
@@ -17,6 +17,7 @@ import {
 } from "../../../lib/workflows";
 import { initializeDatabase } from "../../../lib/db";
 import { integrationStatus, testIntegration, generateContent } from "../../../lib/integrations";
+import { SupabaseAuthError } from "../../../lib/supabase-auth";
 
 const JSON_LIMIT = 1_000_000;
 const IMAGE_LIMIT = 2_500_000;
@@ -107,6 +108,7 @@ function safeErrorMessage(error: unknown): string {
 
 function statusError(error: unknown, request: NextRequest) {
   if (error instanceof HttpError) return json({ error: error.message }, error.status);
+  if (error instanceof SupabaseAuthError) return json({ error: error.message }, error.status);
   const code = databaseErrorCode(error);
   if (
     code === "23505"
@@ -138,10 +140,19 @@ export async function GET(request: NextRequest) {
     const parts = pathInfo(request);
     const path = `/${parts.join("/")}`;
     if (path === "/api/session") {
-      const current = await getSessionFromRequest(request);
-      return json(current
+      const current = await getSessionFromRequest(request, true);
+      const response = json(current
         ? { authenticated: true, user: current.user, csrf: current.session.csrf }
         : { authenticated: false });
+      if (current?.refreshedTokens) {
+        setSessionCookie(response, request.cookies.get(COOKIE_NAME)!.value, current.refreshedTokens);
+      } else if (
+        !current
+        && (request.cookies.has(ACCESS_COOKIE_NAME) || request.cookies.has(REFRESH_COOKIE_NAME))
+      ) {
+        clearSessionCookie(response);
+      }
+      return response;
     }
 
     const { user } = await requireSession(request);
@@ -196,17 +207,17 @@ export async function POST(request: NextRequest) {
       assertSameOrigin(request);
       checkLoginRateLimit("local");
       const data = await body(request);
-      const username = typeof data.username === "string" ? data.username.slice(0, 80) : "";
+      const username = typeof data.username === "string" ? data.username.slice(0, 80).trim() : "";
       const password = typeof data.password === "string" ? data.password : "";
-      const user = await authenticate(username, password);
-      if (!user) {
+      const authenticated = username ? await authenticate(username, password) : null;
+      if (!authenticated) {
         recordLoginFailure("local");
-        throw new HttpError(401, "Identifiants invalides.");
+        throw new HttpError(401, "Identifiants invalides ou compte Cabalou non activé.");
       }
       clearLoginFailures("local");
-      const session = createSession(user.id);
-      const response = json({ authenticated: true, user, csrf: session.csrf });
-      setSessionCookie(response, session.token);
+      const session = createSession(authenticated.user.id);
+      const response = json({ authenticated: true, user: authenticated.user, csrf: session.csrf });
+      setSessionCookie(response, session.token, authenticated.auth);
       return response;
     }
     const { user } = await requireSession(request, true);

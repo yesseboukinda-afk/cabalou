@@ -1,6 +1,7 @@
-import { pbkdf2Sync, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { connectDatabase, initializeDatabase } from "./db";
-import { addAudit, HttpError, passwordHash, utcNow, ROLES_CAN_EDIT, type Role, type User } from "./security";
+import { addAudit, HttpError, utcNow, ROLES_CAN_EDIT, type Role, type User } from "./security";
+import { createSupabaseAuthUser, deleteSupabaseAuthUser } from "./supabase-auth";
 
 export const KPI_DEFINITIONS = [
   { id: "social", label: "Animer nos réseaux", metrics: [
@@ -54,6 +55,10 @@ function publicUser(row: Record<string, unknown>) {
 
 export async function createUser(actorId: number | null, data: JsonObject): Promise<number> {
   const username = text(data, "username", "nom d’utilisateur", 80);
+  const email = text(data, "email", "adresse e-mail", 254).toLowerCase();
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    throw new HttpError(400, "L’adresse e-mail est invalide.");
+  }
   const displayName = text(data, "display_name", "nom affiché", 80);
   const role = text(data, "role", "rôle", 30);
   const password = data.password;
@@ -64,16 +69,22 @@ export async function createUser(actorId: number | null, data: JsonObject): Prom
   if (!["admin", "marketing_manager", "operator", "viewer"].includes(role)) {
     throw new HttpError(400, "Rôle inconnu.");
   }
-  const { salt, hash } = passwordHash(password);
+  const authUser = await createSupabaseAuthUser(email, password, displayName);
   const db = connectDatabase();
   try {
+    await db.exec("BEGIN IMMEDIATE");
     const result = await db.prepare(
-      `INSERT INTO users (username, display_name, role, salt, password_hash, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-    ).run(username, displayName, role, salt, hash, utcNow());
+      `INSERT INTO users (username, email, display_name, role, salt, password_hash, auth_user_id, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(username, email, displayName, role, randomBytes(16), randomBytes(32), authUser.id, utcNow());
     const id = Number(result.lastInsertRowid);
     await addAudit(db, actorId, "user.created", "user", id, `username=${username}; role=${role}`);
+    await db.exec("COMMIT");
     return id;
+  } catch (error) {
+    try { await db.exec("ROLLBACK"); } catch { /* transaction may not have started */ }
+    await deleteSupabaseAuthUser(authUser.id);
+    throw error;
   } finally { await db.close(); }
 }
 
@@ -485,14 +496,14 @@ export async function latestIntegrationChecks() {
   } finally { await db.close(); }
 }
 
-export async function initAdmin(username: string, displayName: string, password: string) {
+export async function initAdmin(username: string, email: string, displayName: string, password: string) {
   await initializeDatabase();
   const db = connectDatabase();
   try {
     const count = (await db.prepare("SELECT COUNT(*) AS count FROM users WHERE role='admin' AND active=1").get() as { count: number }).count;
     if (count) throw new HttpError(400, "Un administrateur actif existe déjà.");
   } finally { await db.close(); }
-  return await createUser(null, { username, display_name: displayName, password, role: "admin" });
+  return await createUser(null, { username, email, display_name: displayName, password, role: "admin" });
 }
 
 export async function ensureDatabaseInitialized() {

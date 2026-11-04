@@ -46,6 +46,7 @@ async function main() {
   const terminal = createInterface({ input: stdin, output: stdout });
   try {
     const username = (await terminal.question("Nom d’utilisateur administrateur : ")).trim();
+    const email = (await terminal.question("Adresse e-mail Supabase : ")).trim();
     const displayName = (await terminal.question("Nom affiché : ")).trim();
     terminal.close();
     const password = await hiddenPrompt("Mot de passe : ");
@@ -54,7 +55,7 @@ async function main() {
       throw new Error("Les mots de passe doivent être identiques, non vides et ne pas dépasser 256 caractères.");
     }
     const { initAdmin } = await import("../lib/service");
-    const userId = await initAdmin(username, displayName, password);
+    const userId = await initAdmin(username, email, displayName, password);
     console.log(`Compte administrateur créé (id ${userId}).`);
   } finally {
     terminal.close();

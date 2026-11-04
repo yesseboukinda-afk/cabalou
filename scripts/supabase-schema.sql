@@ -3,13 +3,20 @@ BEGIN;
 CREATE TABLE IF NOT EXISTS users (
   id BIGSERIAL PRIMARY KEY,
   username TEXT NOT NULL UNIQUE,
+  email TEXT,
   display_name TEXT NOT NULL,
   role TEXT NOT NULL CHECK (role IN ('admin', 'marketing_manager', 'operator', 'viewer')),
   salt BYTEA NOT NULL,
   password_hash BYTEA NOT NULL,
+  auth_user_id TEXT,
   active INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL
 );
+
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS auth_user_id TEXT;
+ALTER TABLE public.users ADD COLUMN IF NOT EXISTS email TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS users_email ON public.users(email);
+CREATE UNIQUE INDEX IF NOT EXISTS users_auth_user_id ON public.users(auth_user_id);
 
 CREATE TABLE IF NOT EXISTS listings (
   id BIGSERIAL PRIMARY KEY,

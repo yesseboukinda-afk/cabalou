@@ -89,10 +89,16 @@ export function CabalouApp() {
     if (method !== "GET") headers["x-csrf-token"] = csrf;
     if (payload) headers["Content-Type"] = "application/json";
     if (file) headers["Content-Type"] = file.type;
-    const response = await fetch(url, {
+    const send = () => fetch(url, {
       method, headers, body: payload ? JSON.stringify(payload) : file ?? undefined,
       cache: "no-store",
     });
+    let response = await send();
+    if (response.status === 401 && url !== "/api/login" && url !== "/api/session") {
+      const sessionResponse = await fetch("/api/session", { cache: "no-store" });
+      const session = await sessionResponse.json() as Payload;
+      if (session.authenticated) response = await send();
+    }
     const result = response.headers.get("content-type")?.includes("application/json")
       ? await response.json() as Payload : null;
     if (!response.ok) throw new Error(typeof result?.error === "string" ? result.error : `Erreur HTTP ${response.status}`);
@@ -659,17 +665,17 @@ function ReportsView({ data, request, mutate, busy, canEdit, onMonthChange }: { 
 
 function UsersView({ data, request, mutate, busy }: { data: Record<string, unknown>; request: (url: string, method?: string, payload?: Payload) => Promise<Payload | null>; mutate: (operation: () => Promise<unknown>, success: string, target?: View) => Promise<boolean>; busy: boolean }) {
   const users = (data.users ?? []) as Row[];
-  const [form, setForm] = useState({ username: "", display_name: "", password: "", role: "operator" });
+  const [form, setForm] = useState({ username: "", email: "", display_name: "", password: "", role: "operator" });
   async function create(event: FormEvent) {
     event.preventDefault();
     if (await mutate(() => request("/api/users", "POST", form), "Utilisateur créé.", "users")) {
-      setForm({ username: "", display_name: "", password: "", role: "operator" });
+      setForm({ username: "", email: "", display_name: "", password: "", role: "operator" });
     }
   }
   return <>
     <PageHeading eyebrow="ADMINISTRATION" title="Utilisateurs" description="Gérez les comptes et les rôles d’accès." />
     <section className="panel"><div className="panel-heading"><div><h2>Créer un compte</h2></div></div>
-      <form className="form-grid" onSubmit={(event) => void create(event)}><label>Nom d’utilisateur<input required maxLength={80} value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} /></label><label>Nom affiché<input required maxLength={80} value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} /></label><PasswordField id="new-user-password" label="Mot de passe" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} autoComplete="new-password" required /><label>Rôle<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>{Object.entries(roleLabels).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label><button className="button button-primary" disabled={busy}>Créer l’utilisateur</button></form>
+      <form className="form-grid" onSubmit={(event) => void create(event)}><label>Nom d’utilisateur<input required maxLength={80} autoComplete="username" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} /></label><label>Adresse e-mail Supabase<input type="email" autoComplete="email" required maxLength={254} value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label><label>Nom affiché<input required maxLength={80} value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} /></label><PasswordField id="new-user-password" label="Mot de passe Supabase" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} autoComplete="new-password" required /><label>Rôle<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>{Object.entries(roleLabels).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label><button className="button button-primary" disabled={busy}>Créer l’utilisateur</button></form>
     </section>
     <section className="panel"><div className="panel-heading"><div><h2>Comptes</h2></div></div><div className="table-scroll"><table><thead><tr><th>Compte</th><th>Rôle</th><th>État</th><th>Accès</th></tr></thead><tbody>{users.map((item) => <tr key={String(item.id)}><td><strong>{display(item.display_name)}</strong><small className="table-sub">{display(item.username)}</small></td><td><select aria-label={`Rôle de ${item.username}`} value={String(item.role)} onChange={(event) => void mutate(() => request(`/api/users/${item.id}`, "PATCH", { role: event.target.value, active: Boolean(item.active) }), "Rôle mis à jour.", "users")}>{Object.entries(roleLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></td><td>{item.active ? "Actif" : "Désactivé"}</td><td><button className="text-button" disabled={busy} onClick={() => void mutate(() => request(`/api/users/${item.id}`, "PATCH", { role: item.role, active: !item.active }), "Accès mis à jour.", "users")}>{item.active ? "Désactiver" : "Réactiver"}</button></td></tr>)}</tbody></table></div></section>
   </>;

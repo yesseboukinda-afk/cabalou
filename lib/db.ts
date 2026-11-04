@@ -148,11 +148,13 @@ export async function initializeDatabase(): Promise<void> {
       CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY,
         username TEXT NOT NULL UNIQUE,
+        email TEXT,
         display_name TEXT NOT NULL,
         role TEXT NOT NULL CHECK (role IN
           ('admin', 'marketing_manager', 'operator', 'viewer')),
         salt BLOB NOT NULL,
         password_hash BLOB NOT NULL,
+        auth_user_id TEXT,
         active INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL
       );
@@ -287,12 +289,25 @@ export async function initializeDatabase(): Promise<void> {
     await db.exec(schema);
     if (isSupabaseDatabase()) {
       await db.exec(`
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_user_id TEXT;
+        CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email);
+        CREATE UNIQUE INDEX IF NOT EXISTS users_auth_user_id ON users(auth_user_id);
         ALTER TABLE listings ADD COLUMN IF NOT EXISTS is_demo INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE posts ADD COLUMN IF NOT EXISTS is_demo INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE posts ADD COLUMN IF NOT EXISTS image_data BYTEA;
         ALTER TABLE posts ADD COLUMN IF NOT EXISTS image_mime TEXT;
       `);
     } else {
+      const userColumns = await db.prepare("PRAGMA table_info(users)").all() as { name: string }[];
+      if (!userColumns.some((column) => column.name === "email")) {
+        await db.exec("ALTER TABLE users ADD COLUMN email TEXT");
+      }
+      if (!userColumns.some((column) => column.name === "auth_user_id")) {
+        await db.exec("ALTER TABLE users ADD COLUMN auth_user_id TEXT");
+      }
+      await db.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_email ON users(email)");
+      await db.exec("CREATE UNIQUE INDEX IF NOT EXISTS users_auth_user_id ON users(auth_user_id)");
       const listingColumns = await db.prepare("PRAGMA table_info(listings)").all() as { name: string }[];
       if (!listingColumns.some((column) => column.name === "is_demo")) {
         await db.exec("ALTER TABLE listings ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0");

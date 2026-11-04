@@ -8,6 +8,10 @@ import { NextRequest } from "next/server";
 let directory = "";
 let databasePath = "";
 let supabaseDatabaseUrl: string | undefined;
+let originalFetch: typeof fetch;
+const originalAuthEnv: Record<string, string | undefined> = {};
+const authUsers = new Map<string, { id: string; email: string; password: string }>();
+let authUserSequence = 0;
 let service: typeof import("../lib/service");
 let security: typeof import("../lib/security");
 let workflows: typeof import("../lib/workflows");
@@ -17,9 +21,69 @@ let adminId = 0;
 let managerId = 0;
 let viewerId = 0;
 
+function cookieHeader(response: Response): string {
+  const setCookie = response.headers.get("set-cookie");
+  assert.ok(setCookie);
+  return setCookie
+    .split(/,\s*(?=[^;,]+=)/)
+    .map((cookie) => cookie.split(";", 1)[0])
+    .join("; ");
+}
+
 before(async () => {
   supabaseDatabaseUrl = process.env.CABALOU_SUPABASE_DATABASE_URL;
   delete process.env.CABALOU_SUPABASE_DATABASE_URL;
+  for (const key of ["SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY"]) {
+    originalAuthEnv[key] = process.env[key];
+  }
+  process.env.SUPABASE_URL = "https://test.supabase.co";
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "test-anon-key";
+  process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
+  originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input, init) => {
+    const url = new URL(String(input));
+    const body = init?.body
+      ? JSON.parse(String(init.body)) as Record<string, unknown>
+      : {};
+    if (url.pathname === "/auth/v1/admin/users" && init?.method === "POST") {
+      const email = String(body.email).toLowerCase();
+      if (authUsers.has(email)) return Response.json({ msg: "already registered" }, { status: 422 });
+      const id = `test-auth-${++authUserSequence}`;
+      authUsers.set(email, { id, email, password: String(body.password) });
+      return Response.json({ id, email });
+    }
+    if (url.pathname.startsWith("/auth/v1/admin/users/") && init?.method === "DELETE") {
+      const id = decodeURIComponent(url.pathname.split("/").at(-1) ?? "");
+      for (const [email, user] of authUsers) if (user.id === id) authUsers.delete(email);
+      return new Response(null, { status: 200 });
+    }
+    if (url.pathname === "/auth/v1/token" && url.searchParams.get("grant_type") === "password") {
+      const user = authUsers.get(String(body.email).toLowerCase());
+      if (!user || user.password !== body.password) return Response.json({}, { status: 400 });
+      return Response.json({
+        access_token: `access-${user.id}`, refresh_token: `refresh-${user.id}`,
+        expires_in: 3600, user: { id: user.id, email: user.email },
+      });
+    }
+    if (url.pathname === "/auth/v1/token" && url.searchParams.get("grant_type") === "refresh_token") {
+      const id = String(body.refresh_token).replace(/^refresh-/, "");
+      const user = [...authUsers.values()].find((item) => item.id === id);
+      if (!user) return Response.json({}, { status: 400 });
+      return Response.json({
+        access_token: `access-${user.id}`, refresh_token: `refresh-${user.id}`,
+        expires_in: 3600, user: { id: user.id, email: user.email },
+      });
+    }
+    if (url.pathname === "/auth/v1/user") {
+      const token = new Headers(init?.headers).get("authorization")?.replace(/^Bearer /, "");
+      const id = token?.replace(/^access-/, "");
+      const user = [...authUsers.values()].find((item) => item.id === id);
+      return user
+        ? Response.json({ id: user.id, email: user.email })
+        : Response.json({}, { status: 401 });
+    }
+    return Response.json({ message: "Unhandled test auth request" }, { status: 500 });
+  }) as typeof fetch;
   directory = await mkdtemp(join(tmpdir(), "cabalou-next-"));
   databasePath = join(directory, "test.sqlite3");
   process.env.CABALOU_DB_PATH = databasePath;
@@ -30,12 +94,17 @@ before(async () => {
   workflows = await import("../lib/workflows");
   route = await import("../app/api/[...path]/route");
   await service.ensureDatabaseInitialized();
-  adminId = await service.initAdmin("admin", "Administrateur", "Password admin local 123!");
+  adminId = await service.createUser(null, {
+    username: "admin", email: "admin@example.test", display_name: "Administrateur",
+    password: "Password admin local 123!", role: "admin",
+  });
   managerId = await service.createUser(adminId, {
-    username: "manager", display_name: "Responsable", password: "Password manager 123!", role: "marketing_manager",
+    username: "manager", email: "manager@example.test", display_name: "Responsable",
+    password: "Password manager 123!", role: "marketing_manager",
   });
   viewerId = await service.createUser(adminId, {
-    username: "viewer", display_name: "Lecture seule", password: "Password viewer 123!", role: "viewer",
+    username: "viewer", email: "viewer@example.test", display_name: "Lecture seule",
+    password: "Password viewer 123!", role: "viewer",
   });
 });
 
@@ -43,6 +112,11 @@ after(async () => {
   if (directory) await rm(directory, { recursive: true, force: true });
   delete process.env.CABALOU_DB_PATH;
   delete process.env.CABALOU_SESSION_SECRET;
+  globalThis.fetch = originalFetch;
+  for (const [key, value] of Object.entries(originalAuthEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   if (supabaseDatabaseUrl === undefined) delete process.env.CABALOU_SUPABASE_DATABASE_URL;
   else process.env.CABALOU_SUPABASE_DATABASE_URL = supabaseDatabaseUrl;
 });
@@ -53,22 +127,21 @@ describe("migration Next Cabalou", () => {
     assert.throws(() => database.parsePostgresBigint("9007199254740992"), /dépasse la plage/);
   });
 
-  it("authentifie les mots de passe PBKDF2 conservés dans SQLite", async () => {
-    assert.equal((await security.authenticate("admin", "Password admin local 123!"))?.id, adminId);
+  it("authentifie le nom d’utilisateur Cabalou par Supabase Auth", async () => {
+    assert.equal((await security.authenticate("admin", "Password admin local 123!"))?.user.id, adminId);
     assert.equal(await security.authenticate("admin", "incorrect"), null);
   });
 
-  it("accepte tout mot de passe non vide jusqu’à 256 caractères", async () => {
-    const shortPasswordUser = await service.createUser(adminId, {
-      username: "short-password", display_name: "Mot de passe court", password: "Admin123!", role: "operator",
+  it("crée les comptes dans Supabase Auth et conserve le nom d’utilisateur", async () => {
+    const operatorId = await service.createUser(adminId, {
+      username: "short-password", email: "operator@example.test",
+      display_name: "Opérateur", password: "Admin123!", role: "operator",
     });
-    assert.equal((await security.authenticate("short-password", "Admin123!"))?.id, shortPasswordUser);
+    assert.equal((await security.authenticate("short-password", "Admin123!"))?.user.id, operatorId);
     await assert.rejects(service.createUser(adminId, {
-      username: "empty-password", display_name: "Mot de passe vide", password: "", role: "operator",
-    }), /obligatoire/);
-    await assert.rejects(service.createUser(adminId, {
-      username: "long-password", display_name: "Mot de passe trop long", password: "a".repeat(257), role: "operator",
-    }), /256 caractères/);
+      username: "invalid-email", email: "invalid", display_name: "E-mail invalide",
+      password: "Admin123!", role: "operator",
+    }), /e-mail est invalide/);
   });
 
   it("applique les transitions de validation et interdit l’auto-approbation", async () => {
@@ -162,26 +235,36 @@ describe("migration Next Cabalou", () => {
     }));
     assert.equal(login.status, 200);
     const authenticated = await login.json() as { csrf: string };
-    const cookie = login.headers.get("set-cookie");
-    assert.ok(cookie);
+    const cookie = cookieHeader(login);
+    assert.match(cookie, /cabalou_session=/);
+    assert.match(cookie, /cabalou_access_token=/);
+    assert.match(cookie, /cabalou_refresh_token=/);
+
+    const refreshed = await route.GET(new NextRequest("http://127.0.0.1:3000/api/session", {
+      headers: { cookie: cookie.replace(/cabalou_access_token=[^;]+/, "cabalou_access_token=expired") },
+    }));
+    assert.equal(refreshed.status, 200);
+    assert.equal((await refreshed.json() as { authenticated: boolean }).authenticated, true);
+    assert.match(cookieHeader(refreshed), /cabalou_access_token=access-test-auth-1/);
+    assert.match(cookieHeader(refreshed), /cabalou_refresh_token=refresh-test-auth-1/);
 
     const deniedOrigin = await route.POST(new NextRequest("http://127.0.0.1:3000/api/posts", {
       method: "POST",
-      headers: { "content-type": "application/json", host: "127.0.0.1:3000", cookie: cookie!.split(";")[0], "x-csrf-token": authenticated.csrf, origin: "https://attacker.example" },
+      headers: { "content-type": "application/json", host: "127.0.0.1:3000", cookie, "x-csrf-token": authenticated.csrf, origin: "https://attacker.example" },
       body: JSON.stringify({ title: "Test", channel: "facebook", body: "", destination_url: "https://cabalou.net/" }),
     }));
     assert.equal(deniedOrigin.status, 403);
 
     const deniedCsrf = await route.POST(new NextRequest("http://127.0.0.1:3000/api/posts", {
       method: "POST",
-      headers: { "content-type": "application/json", host: "127.0.0.1:3000", cookie: cookie!.split(";")[0], origin: "http://127.0.0.1:3000" },
+      headers: { "content-type": "application/json", host: "127.0.0.1:3000", cookie, origin: "http://127.0.0.1:3000" },
       body: JSON.stringify({ title: "Test", channel: "facebook", body: "", destination_url: "https://cabalou.net/" }),
     }));
     assert.equal(deniedCsrf.status, 403);
 
     const created = await route.POST(new NextRequest("http://127.0.0.1:3000/api/posts", {
       method: "POST",
-      headers: { "content-type": "application/json", host: "127.0.0.1:3000", cookie: cookie!.split(";")[0], "x-csrf-token": authenticated.csrf, origin: "http://127.0.0.1:3000" },
+      headers: { "content-type": "application/json", host: "127.0.0.1:3000", cookie, "x-csrf-token": authenticated.csrf, origin: "http://127.0.0.1:3000" },
       body: JSON.stringify({ title: "API test", channel: "facebook", body: "", destination_url: "https://cabalou.net/" }),
     }));
     assert.equal(created.status, 200);
@@ -189,8 +272,8 @@ describe("migration Next Cabalou", () => {
 
     const duplicateUser = await route.POST(new NextRequest("http://127.0.0.1:3000/api/users", {
       method: "POST",
-      headers: { "content-type": "application/json", host: "127.0.0.1:3000", cookie: cookie!.split(";")[0], "x-csrf-token": authenticated.csrf, origin: "http://127.0.0.1:3000" },
-      body: JSON.stringify({ username: "manager", display_name: "Doublon", password: "Password duplicate 123!", role: "operator" }),
+      headers: { "content-type": "application/json", host: "127.0.0.1:3000", cookie, "x-csrf-token": authenticated.csrf, origin: "http://127.0.0.1:3000" },
+      body: JSON.stringify({ username: "manager", email: "manager@example.test", display_name: "Doublon", password: "Password duplicate 123!", role: "operator" }),
     }));
     assert.equal(duplicateUser.status, 409);
 
@@ -200,10 +283,10 @@ describe("migration Next Cabalou", () => {
     }));
     assert.equal(viewerLogin.status, 200);
     const viewerSession = await viewerLogin.json() as { csrf: string };
-    const viewerCookie = viewerLogin.headers.get("set-cookie")!;
+    const viewerCookie = cookieHeader(viewerLogin);
     const forbidden = await route.POST(new NextRequest("http://127.0.0.1:3000/api/posts", {
       method: "POST",
-      headers: { "content-type": "application/json", cookie: viewerCookie.split(";")[0], "x-csrf-token": viewerSession.csrf },
+      headers: { "content-type": "application/json", cookie: viewerCookie, "x-csrf-token": viewerSession.csrf },
       body: JSON.stringify({ title: "Viewer test", channel: "facebook", body: "", destination_url: "https://cabalou.net/" }),
     }));
     assert.equal(forbidden.status, 403);
