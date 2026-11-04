@@ -255,7 +255,7 @@ export function CabalouApp() {
 
 function Brand() {
   return <a className="brand" href="#" onClick={(event) => event.preventDefault()} aria-label="Cabalou">
-    <span className="brand-mark">C</span><span>Cabalou<span className="brand-sub">Marketing</span></span>
+    <img className="brand-mark" src="/logo.png" alt="" /><span>Cabalou<span className="brand-sub">Marketing</span></span>
   </a>;
 }
 

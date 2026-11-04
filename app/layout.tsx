@@ -4,6 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Cabalou",
   description: "Espace marketing local de Cabalou. Les contenus restent des brouillons jusqu’à leur validation.",
+  icons: { icon: "/logo.png" },
 };
 
 export default function RootLayout({
