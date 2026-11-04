@@ -1,0 +1,10 @@
+.next/
+node_modules/
+out/
+coverage/
+*.tsbuildinfo
+.env
+.env.local
+data/*.sqlite3-shm
+data/*.sqlite3-wal
+data/*.sqlite3

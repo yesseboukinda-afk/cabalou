@@ -1,0 +1,31 @@
+{
+  "name": "cabalou_project",
+  "version": "1.0.0",
+  "description": "Application full-stack Next.js pour la gestion marketing locale de Cabalou.",
+  "scripts": {
+    "dev": "node scripts/next-local.mjs dev",
+    "build": "next build",
+    "start": "node scripts/next-local.mjs start",
+    "init-admin": "tsx scripts/init-admin.ts",
+    "typecheck": "tsc --noEmit",
+    "test:next": "tsx --test tests-next/app.test.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@next/env": "^16.4.5",
+    "next": "^16.4.5",
+    "nodemailer": "^10.3.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
