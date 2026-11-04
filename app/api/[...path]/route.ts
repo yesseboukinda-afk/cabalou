@@ -98,6 +98,13 @@ function databaseErrorCode(error: unknown): string | null {
   return typeof error.code === "string" ? error.code : null;
 }
 
+function safeErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) return "UnknownError";
+  return error.message
+    .replace(/postgres(?:ql)?:\/\/[^\s"'<>]+/gi, "[database URL redacted]")
+    .replace(/\b(password|passwd|secret|token)\s*[=:]\s*\S+/gi, "$1=[redacted]");
+}
+
 function statusError(error: unknown, request: NextRequest) {
   if (error instanceof HttpError) return json({ error: error.message }, error.status);
   const code = databaseErrorCode(error);
@@ -116,7 +123,12 @@ function statusError(error: unknown, request: NextRequest) {
   ) {
     return json({ error: "Cette opération ne respecte pas les contraintes de données." }, 400);
   }
-  console.error("API request failed:", error instanceof Error ? error.name : "UnknownError");
+  console.error("API request failed:", {
+    path: new URL(request.url).pathname,
+    name: error instanceof Error ? error.name : "UnknownError",
+    code,
+    message: safeErrorMessage(error),
+  });
   return json({ error: "Une erreur interne est survenue." }, 500);
 }
 
