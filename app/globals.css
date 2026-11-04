@@ -515,6 +515,7 @@ input:focus, select:focus, textarea:focus { border-color: #8c3f32; box-shadow: 0
   background: #171717;
 }
 .login-editorial { max-width: 540px; color: #fff; }
+.login-editorial-logo { display: block; width: 92px; height: 92px; margin-bottom: 32px; border-radius: 12px; object-fit: cover; }
 .editorial-kicker {
   margin-bottom: 34px;
   color: #d3a28f;
@@ -565,6 +566,7 @@ input:focus, select:focus, textarea:focus { border-color: #8c3f32; box-shadow: 0
   .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .login-layout { grid-template-columns: 1fr; gap: 42px; padding: 42px 24px; }
   .login-editorial { max-width: 100%; }
+  .login-editorial-logo { width: 72px; height: 72px; margin-bottom: 24px; }
   .editorial-kicker { margin-bottom: 20px; }
   .editorial-title { font-size: clamp(48px, 12vw, 76px); }
   .editorial-caption { margin-top: 20px; }

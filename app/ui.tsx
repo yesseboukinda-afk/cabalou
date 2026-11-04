@@ -186,6 +186,7 @@ export function CabalouApp() {
   if (!user) return (
     <main className="login-layout">
       <div className="login-editorial">
+        <img className="login-editorial-logo" src="/logo.png" alt="Logo Cabalou" />
         <p className="editorial-title">L’image<br />de marque<br /><em>commence ici.</em></p>
         <p className="editorial-caption">Contenus · calendrier · performance</p>
       </div>
