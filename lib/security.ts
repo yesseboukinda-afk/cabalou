@@ -90,21 +90,21 @@ function parseSession(token: string): Session | null {
   }
 }
 
-export function getSessionFromRequest(request: NextRequest): { session: Session; user: User } | null {
+export async function getSessionFromRequest(request: NextRequest): Promise<{ session: Session; user: User } | null> {
   const token = request.cookies.get(COOKIE_NAME)?.value ?? "";
   const session = parseSession(token);
   if (!session) return null;
-  initializeDatabase();
+  await initializeDatabase();
   const db = connectDatabase();
   try {
-    const user = db.prepare(
+    const user = await db.prepare(
       "SELECT id, username, display_name, role, active FROM users WHERE id=?",
     ).get(session.uid) as (User & { active: number }) | undefined;
     if (!user || !user.active) return null;
     const { active: _active, ...publicUser } = user;
     return { session, user: publicUser };
   } finally {
-    db.close();
+    await db.close();
   }
 }
 
@@ -113,22 +113,22 @@ export async function getSessionFromCookies(): Promise<{ session: Session; user:
   const token = jar.get(COOKIE_NAME)?.value ?? "";
   const session = parseSession(token);
   if (!session) return null;
-  initializeDatabase();
+  await initializeDatabase();
   const db = connectDatabase();
   try {
-    const user = db.prepare(
+    const user = await db.prepare(
       "SELECT id, username, display_name, role, active FROM users WHERE id=?",
     ).get(session.uid) as (User & { active: number }) | undefined;
     if (!user || !user.active) return null;
     const { active: _active, ...publicUser } = user;
     return { session, user: publicUser };
   } finally {
-    db.close();
+    await db.close();
   }
 }
 
-export function requireSession(request: NextRequest, csrf = false) {
-  const current = getSessionFromRequest(request);
+export async function requireSession(request: NextRequest, csrf = false) {
+  const current = await getSessionFromRequest(request);
   if (!current) throw new HttpError(401, "Session expirée. Veuillez vous reconnecter.");
   if (csrf) {
     assertSameOrigin(request);
@@ -169,11 +169,11 @@ export function passwordHash(password: string, salt?: Buffer): { salt: Buffer; h
   };
 }
 
-export function authenticate(username: string, password: string): User | null {
-  initializeDatabase();
+export async function authenticate(username: string, password: string): Promise<User | null> {
+  await initializeDatabase();
   const db = connectDatabase();
   try {
-    const row = db.prepare(
+    const row = await db.prepare(
       "SELECT id, username, display_name, role, salt, password_hash FROM users WHERE username=? AND active=1",
     ).get(username) as {
       id: number; username: string; display_name: string; role: Role;
@@ -188,7 +188,7 @@ export function authenticate(username: string, password: string): User | null {
     ) return null;
     return { id: row.id, username: row.username, display_name: row.display_name, role: row.role };
   } finally {
-    db.close();
+    await db.close();
   }
 }
 
@@ -224,15 +224,15 @@ export function clearSessionCookie(response: NextResponse): void {
   });
 }
 
-export function addAudit(
+export async function addAudit(
   db: ReturnType<typeof connectDatabase>,
   actorId: number | null,
   action: string,
   resourceType: string,
   resourceId: number | string | null,
   details = "",
-): void {
-  db.prepare(
+): Promise<void> {
+  await db.prepare(
     `INSERT INTO audit_events (actor_id, action, resource_type, resource_id, details, created_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
   ).run(actorId, action, resourceType, String(resourceId ?? ""), details.slice(0, 500), utcNow());

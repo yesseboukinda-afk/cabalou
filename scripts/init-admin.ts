@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-import { loadEnvConfig } from "@next/env";
+import nextEnv from "@next/env";
 
 function hiddenPrompt(prompt: string): Promise<string> {
   if (!stdin.isTTY || !stdin.setRawMode) {
@@ -39,7 +39,7 @@ function hiddenPrompt(prompt: string): Promise<string> {
 }
 
 async function main() {
-  loadEnvConfig(process.cwd());
+  nextEnv.loadEnvConfig(process.cwd());
   if ((process.env.CABALOU_SESSION_SECRET ?? "").length < 32) {
     throw new Error("Définissez CABALOU_SESSION_SECRET (au moins 32 caractères) avant l’initialisation.");
   }
@@ -54,7 +54,7 @@ async function main() {
       throw new Error("Les mots de passe doivent être identiques, non vides et ne pas dépasser 256 caractères.");
     }
     const { initAdmin } = await import("../lib/service");
-    const userId = initAdmin(username, displayName, password);
+    const userId = await initAdmin(username, displayName, password);
     console.log(`Compte administrateur créé (id ${userId}).`);
   } finally {
     terminal.close();

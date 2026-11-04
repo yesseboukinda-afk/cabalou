@@ -1,25 +1,134 @@
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import postgres from "postgres";
+
+type DbValue = string | number | bigint | Uint8Array | null;
+type DbRow = Record<string, unknown>;
+
+export type PreparedStatement = {
+  get(...values: DbValue[]): Promise<DbRow | undefined>;
+  all(...values: DbValue[]): Promise<DbRow[]>;
+  run(...values: DbValue[]): Promise<{ lastInsertRowid: number | bigint; changes: number }>;
+};
+
+export type DatabaseConnection = {
+  prepare(query: string): PreparedStatement;
+  exec(query: string): Promise<void>;
+  close(): Promise<void>;
+};
 
 const databasePath = resolve(
   /* turbopackIgnore: true */ process.env.CABALOU_DB_PATH ?? "data/cabalou_demo.sqlite3",
 );
+const supabaseDatabaseUrl = process.env.CABALOU_SUPABASE_DATABASE_URL;
+
+function isSupabaseDatabase(): boolean {
+  return Boolean(supabaseDatabaseUrl);
+}
+
+function validateSupabaseDatabaseUrl(value: string): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("CABALOU_SUPABASE_DATABASE_URL doit être l’URL de connexion PostgreSQL Supabase, pas l’URL du site.");
+  }
+  if (!["postgres:", "postgresql:"].includes(url.protocol)) {
+    throw new Error("CABALOU_SUPABASE_DATABASE_URL doit être une URL PostgreSQL (postgresql://...), pas l’URL HTTPS du projet Supabase.");
+  }
+}
+
+function postgresQuery(query: string): string {
+  let index = 0;
+  return query.replace(/\s+COLLATE NOCASE/gi, "").replace(/\?/g, () => `$${++index}`);
+}
 
 let initialized = false;
 
-export function connectDatabase(): DatabaseSync {
+export function connectDatabase(): DatabaseConnection {
+  if (isSupabaseDatabase()) {
+    validateSupabaseDatabaseUrl(supabaseDatabaseUrl!);
+    const client = postgres(supabaseDatabaseUrl!, {
+      max: 1,
+      prepare: false,
+      connect_timeout: 10,
+      ssl: "require",
+    });
+    return {
+      prepare(query) {
+        const sql = postgresQuery(query);
+        const insertTable = /^\s*INSERT\s+INTO\s+([a-z_]+)/i.exec(query)?.[1];
+        const returningId = insertTable
+          && !/\bRETURNING\b/i.test(query)
+          && !["monthly_kpis", "seo_target_metrics"].includes(insertTable.toLowerCase());
+        const runSql = returningId ? `${sql} RETURNING id` : sql;
+        return {
+          async get(...values) {
+            const rows = await client.unsafe(sql, values);
+            return rows[0] as DbRow | undefined;
+          },
+          async all(...values) {
+            return await client.unsafe(sql, values) as DbRow[];
+          },
+          async run(...values) {
+            const result = await client.unsafe(runSql, values);
+            const rowId = result[0]?.id;
+            return {
+              lastInsertRowid: typeof rowId === "number" || typeof rowId === "bigint" ? rowId : 0,
+              changes: Number(result.count),
+            };
+          },
+        };
+      },
+      async exec(query) {
+        const statements = query.split(";").map((statement) => statement.trim()).filter(Boolean);
+        for (const statement of statements) {
+          const sql = statement
+            .replace(/^BEGIN IMMEDIATE$/i, "BEGIN")
+            .replace(/\bINTEGER\s+PRIMARY\s+KEY\b/gi, "BIGSERIAL PRIMARY KEY")
+            .replace(/\bBLOB\b/gi, "BYTEA");
+          await client.unsafe(postgresQuery(sql));
+        }
+      },
+      async close() {
+        await client.end({ timeout: 5 });
+      },
+    };
+  }
+
   mkdirSync(dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath, { enableForeignKeyConstraints: true });
   db.exec("PRAGMA busy_timeout = 10000");
-  return db;
+  return {
+    prepare(query) {
+      const statement = db.prepare(query);
+      return {
+        async get(...values) {
+          return statement.get(...values as never[]) as DbRow | undefined;
+        },
+        async all(...values) {
+          return statement.all(...values as never[]) as DbRow[];
+        },
+        async run(...values) {
+          const result = statement.run(...values as never[]);
+          return { lastInsertRowid: result.lastInsertRowid, changes: Number(result.changes) };
+        },
+      };
+    },
+    async exec(query) { db.exec(query); },
+    async close() { db.close(); },
+  };
 }
 
-export function initializeDatabase(): void {
+export async function initializeDatabase(): Promise<void> {
   if (initialized) return;
+  if (process.env.VERCEL && !supabaseDatabaseUrl) {
+    throw new Error("Vercel requires CABALOU_SUPABASE_DATABASE_URL to use the persistent Supabase database.");
+  }
   const db = connectDatabase();
   try {
-    db.exec(`
+    const schema = `
       CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY,
         username TEXT NOT NULL UNIQUE,
@@ -158,27 +267,37 @@ export function initializeDatabase(): void {
       CREATE INDEX IF NOT EXISTS group_requests_status ON group_requests(status, updated_at);
       CREATE INDEX IF NOT EXISTS reactivation_events_contact ON reactivation_events(contact_id, created_at);
       CREATE INDEX IF NOT EXISTS retargeting_events_prospect ON retargeting_events(prospect_id, created_at);
-    `);
-    const listingColumns = db.prepare("PRAGMA table_info(listings)").all() as { name: string }[];
-    if (!listingColumns.some((column) => column.name === "is_demo")) {
-      db.exec("ALTER TABLE listings ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0");
-      db.exec("UPDATE listings SET is_demo = 1");
+    `;
+    await db.exec(schema);
+    if (isSupabaseDatabase()) {
+      await db.exec(`
+        ALTER TABLE listings ADD COLUMN IF NOT EXISTS is_demo INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE posts ADD COLUMN IF NOT EXISTS is_demo INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE posts ADD COLUMN IF NOT EXISTS image_data BYTEA;
+        ALTER TABLE posts ADD COLUMN IF NOT EXISTS image_mime TEXT;
+      `);
+    } else {
+      const listingColumns = await db.prepare("PRAGMA table_info(listings)").all() as { name: string }[];
+      if (!listingColumns.some((column) => column.name === "is_demo")) {
+        await db.exec("ALTER TABLE listings ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0");
+        await db.exec("UPDATE listings SET is_demo = 1");
+      }
+      const postColumns = await db.prepare("PRAGMA table_info(posts)").all() as { name: string }[];
+      if (!postColumns.some((column) => column.name === "is_demo")) {
+        await db.exec("ALTER TABLE posts ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0");
+      }
+      if (!postColumns.some((column) => column.name === "image_data")) {
+        await db.exec("ALTER TABLE posts ADD COLUMN image_data BLOB");
+      }
+      if (!postColumns.some((column) => column.name === "image_mime")) {
+        await db.exec("ALTER TABLE posts ADD COLUMN image_mime TEXT");
+      }
     }
-    const postColumns = db.prepare("PRAGMA table_info(posts)").all() as { name: string }[];
-    if (!postColumns.some((column) => column.name === "is_demo")) {
-      db.exec("ALTER TABLE posts ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0");
-    }
-    if (!postColumns.some((column) => column.name === "image_data")) {
-      db.exec("ALTER TABLE posts ADD COLUMN image_data BLOB");
-    }
-    if (!postColumns.some((column) => column.name === "image_mime")) {
-      db.exec("ALTER TABLE posts ADD COLUMN image_mime TEXT");
-    }
-    db.prepare(
+    await db.prepare(
       `UPDATE posts SET is_demo = 1 WHERE created_by IS NULL AND title IN (?, ?)`,
     ).run("Un séjour pratique à Libreville", "Votre prochain séjour à Cotonou");
     initialized = true;
   } finally {
-    db.close();
+    await db.close();
   }
 }

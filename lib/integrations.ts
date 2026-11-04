@@ -306,7 +306,7 @@ export async function generateContent(data: Record<string, unknown>) {
     if (typeof data.listing_id !== "number" && typeof data.listing_id !== "string") throw new HttpError(400, "Logement invalide.");
     listingId = Number(data.listing_id);
     if (!Number.isSafeInteger(listingId) || listingId < 1) throw new HttpError(400, "Logement invalide.");
-    const listing = listListings().find((item) => item.id === listingId);
+    const listing = (await listListings()).find((item) => item.id === listingId);
     if (!listing) throw new HttpError(400, "Le logement sélectionné est introuvable ou non vérifié.");
     facts.unshift(
       `Nom : ${listing.name}`, `Ville : ${listing.city}`, `Quartier : ${listing.neighborhood}`,

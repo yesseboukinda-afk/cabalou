@@ -52,7 +52,7 @@ function publicUser(row: Record<string, unknown>) {
   return { id: row.id, username: row.username, display_name: row.display_name, role: row.role };
 }
 
-export function createUser(actorId: number | null, data: JsonObject): number {
+export async function createUser(actorId: number | null, data: JsonObject): Promise<number> {
   const username = text(data, "username", "nom d’utilisateur", 80);
   const displayName = text(data, "display_name", "nom affiché", 80);
   const role = text(data, "role", "rôle", 30);
@@ -67,26 +67,26 @@ export function createUser(actorId: number | null, data: JsonObject): number {
   const { salt, hash } = passwordHash(password);
   const db = connectDatabase();
   try {
-    const result = db.prepare(
+    const result = await db.prepare(
       `INSERT INTO users (username, display_name, role, salt, password_hash, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
     ).run(username, displayName, role, salt, hash, utcNow());
     const id = Number(result.lastInsertRowid);
-    addAudit(db, actorId, "user.created", "user", id, `username=${username}; role=${role}`);
+    await addAudit(db, actorId, "user.created", "user", id, `username=${username}; role=${role}`);
     return id;
-  } finally { db.close(); }
+  } finally { await db.close(); }
 }
 
-export function listUsers() {
+export async function listUsers() {
   const db = connectDatabase();
   try {
-    return db.prepare(
+    return await db.prepare(
       "SELECT id, username, display_name, role, active, created_at FROM users ORDER BY username COLLATE NOCASE",
     ).all();
-  } finally { db.close(); }
+  } finally { await db.close(); }
 }
 
-export function updateUser(actorId: number, userId: number, data: JsonObject) {
+export async function updateUser(actorId: number, userId: number, data: JsonObject) {
   const role = text(data, "role", "rôle", 30);
   const active = data.active;
   if (!["admin", "marketing_manager", "operator", "viewer"].includes(role)) {
@@ -98,31 +98,31 @@ export function updateUser(actorId: number, userId: number, data: JsonObject) {
   }
   const db = connectDatabase();
   try {
-    db.exec("BEGIN IMMEDIATE");
-    const row = db.prepare(
+    await db.exec("BEGIN IMMEDIATE");
+    const row = await db.prepare(
       "SELECT id, username, display_name, role, active FROM users WHERE id=?",
     ).get(userId) as { id: number; username: string; display_name: string; role: string; active: number } | undefined;
     if (!row) throw new HttpError(404, "Utilisateur introuvable.");
     if (row.role === "admin" && row.active && (role !== "admin" || !active)) {
-      const count = (db.prepare(
+      const count = (await db.prepare(
         "SELECT COUNT(*) AS count FROM users WHERE role='admin' AND active=1",
       ).get() as { count: number }).count;
       if (count <= 1) throw new HttpError(400, "Le dernier administrateur actif ne peut pas être désactivé.");
     }
-    db.prepare("UPDATE users SET role=?, active=? WHERE id=?").run(role, Number(active), userId);
-    addAudit(db, actorId, "user.updated", "user", userId, `role=${role}; active=${Number(active)}`);
-    db.exec("COMMIT");
+    await db.prepare("UPDATE users SET role=?, active=? WHERE id=?").run(role, Number(active), userId);
+    await addAudit(db, actorId, "user.updated", "user", userId, `role=${role}; active=${Number(active)}`);
+    await db.exec("COMMIT");
     return { ...row, role, active: Number(active) };
   } catch (error) {
-    try { db.exec("ROLLBACK"); } catch { /* transaction may already have ended */ }
+    try { await db.exec("ROLLBACK"); } catch { /* transaction may already have ended */ }
     throw error;
-  } finally { db.close(); }
+  } finally { await db.close(); }
 }
 
-export function listListings() {
+export async function listListings() {
   const db = connectDatabase();
   try {
-    return (db.prepare(
+    return (await db.prepare(
       "SELECT * FROM listings WHERE is_demo=0 ORDER BY city, name",
     ).all() as Record<string, unknown>[]).map((row) => ({
       id: row.id, external_id: row.external_id, name: row.name, city: row.city,
@@ -130,7 +130,7 @@ export function listListings() {
       features: String(row.features).split("; "),
       public_url: row.public_url, facts_checked_at: row.facts_checked_at,
     }));
-  } finally { db.close(); }
+  } finally { await db.close(); }
 }
 
 const POST_SELECT = `
@@ -143,20 +143,20 @@ const POST_SELECT = `
   FROM posts p LEFT JOIN listings l ON l.id=p.listing_id
   LEFT JOIN users u ON u.id=p.created_by`;
 
-export function listPosts() {
+export async function listPosts() {
   const db = connectDatabase();
   try {
-    return db.prepare(`${POST_SELECT} WHERE p.is_demo=0 ORDER BY
+    return await db.prepare(`${POST_SELECT} WHERE p.is_demo=0 ORDER BY
       CASE p.status WHEN 'pending' THEN 0 WHEN 'draft' THEN 1 ELSE 2 END,
       COALESCE(p.scheduled_date, '9999-12-31'), p.updated_at DESC`).all();
-  } finally { db.close(); }
+  } finally { await db.close(); }
 }
 
-export function getPost(id: number) {
+export async function getPost(id: number) {
   const db = connectDatabase();
   try {
-    return db.prepare(`${POST_SELECT} WHERE p.id=? AND p.is_demo=0`).get(id) ?? null;
-  } finally { db.close(); }
+    return await db.prepare(`${POST_SELECT} WHERE p.id=? AND p.is_demo=0`).get(id) ?? null;
+  } finally { await db.close(); }
 }
 
 function validateHttpsUrl(value: unknown, label: string, max = 2048): string {
@@ -169,7 +169,7 @@ function validateHttpsUrl(value: unknown, label: string, max = 2048): string {
   return value;
 }
 
-export function savePost(actorId: number, id: number | null, data: JsonObject) {
+export async function savePost(actorId: number, id: number | null, data: JsonObject) {
   const title = text(data, "title", "titre", 160);
   const channel = text(data, "channel", "canal", 20).toLowerCase();
   const body = text(data, "body", "texte", 5000, false);
@@ -189,140 +189,140 @@ export function savePost(actorId: number, id: number | null, data: JsonObject) {
     if (!Number.isSafeInteger(listingId) || listingId < 1) throw new HttpError(400, "Logement invalide.");
     const db = connectDatabase();
     try {
-      if (!db.prepare("SELECT 1 FROM listings WHERE id=? AND is_demo=0").get(listingId)) {
+      if (!await db.prepare("SELECT 1 FROM listings WHERE id=? AND is_demo=0").get(listingId)) {
         throw new HttpError(400, "Logement introuvable.");
       }
-    } finally { db.close(); }
+    } finally { await db.close(); }
   }
   const db = connectDatabase();
   try {
     const now = utcNow();
     if (id === null) {
-      const result = db.prepare(
+      const result = await db.prepare(
         `INSERT INTO posts (title, channel, body, destination_url, listing_id, scheduled_date,
          status, created_by, updated_by, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`,
       ).run(title, channel, body, destination, listingId, scheduledDate, actorId, actorId, now, now);
       const postId = Number(result.lastInsertRowid);
-      addAudit(db, actorId, "post.created", "post", postId);
-      return getPost(postId);
+      await addAudit(db, actorId, "post.created", "post", postId);
+      return await getPost(postId);
     }
-    const current = db.prepare(
+    const current = await db.prepare(
       "SELECT status FROM posts WHERE id=? AND is_demo=0",
     ).get(id) as { status: string } | undefined;
     if (!current) throw new HttpError(404, "Contenu introuvable.");
     if (current.status === "published_manual") throw new HttpError(400, "Une publication consignée ne peut plus être modifiée.");
     const newStatus = ["pending", "approved"].includes(current.status) ? "draft" : current.status;
-    db.prepare(
+    await db.prepare(
       `UPDATE posts SET title=?, channel=?, body=?, destination_url=?, listing_id=?,
        scheduled_date=?, status=?, updated_by=?, approved_by=NULL, approved_at=NULL,
        rejection_reason=NULL, version=version+1, updated_at=? WHERE id=?`,
     ).run(title, channel, body, destination, listingId, scheduledDate, newStatus, actorId, now, id);
-    addAudit(db, actorId, "post.updated", "post", id);
-    return getPost(id);
-  } finally { db.close(); }
+    await addAudit(db, actorId, "post.updated", "post", id);
+    return await getPost(id);
+  } finally { await db.close(); }
 }
 
-export function submitPost(actorId: number, id: number) {
+export async function submitPost(actorId: number, id: number) {
   const db = connectDatabase();
   try {
-    const row = db.prepare("SELECT status FROM posts WHERE id=? AND is_demo=0").get(id) as { status: string } | undefined;
+    const row = await db.prepare("SELECT status FROM posts WHERE id=? AND is_demo=0").get(id) as { status: string } | undefined;
     if (!row) throw new HttpError(404, "Contenu introuvable.");
     if (!["draft", "rejected"].includes(row.status)) throw new HttpError(400, "Seul un brouillon ou un contenu rejeté peut être soumis.");
-    db.prepare("UPDATE posts SET status='pending', rejection_reason=NULL, updated_by=?, updated_at=? WHERE id=?").run(actorId, utcNow(), id);
-    addAudit(db, actorId, "post.submitted", "post", id);
-    return getPost(id);
-  } finally { db.close(); }
+    await db.prepare("UPDATE posts SET status='pending', rejection_reason=NULL, updated_by=?, updated_at=? WHERE id=?").run(actorId, utcNow(), id);
+    await addAudit(db, actorId, "post.submitted", "post", id);
+    return await getPost(id);
+  } finally { await db.close(); }
 }
 
-export function reviewPost(actorId: number, role: Role, id: number, approve: boolean, reason = "") {
+export async function reviewPost(actorId: number, role: Role, id: number, approve: boolean, reason = "") {
   if (!["admin", "marketing_manager"].includes(role)) throw new HttpError(403, "Seuls les administrateurs et responsables marketing valident.");
   if (!approve && !reason.trim()) throw new HttpError(400, "Un motif est obligatoire pour rejeter un contenu.");
   const db = connectDatabase();
   try {
-    const row = db.prepare("SELECT status, created_by FROM posts WHERE id=? AND is_demo=0").get(id) as { status: string; created_by: number } | undefined;
+    const row = await db.prepare("SELECT status, created_by FROM posts WHERE id=? AND is_demo=0").get(id) as { status: string; created_by: number } | undefined;
     if (!row) throw new HttpError(404, "Contenu introuvable.");
     if (row.status !== "pending") throw new HttpError(400, "Le contenu n’est pas en attente de validation.");
     if (row.created_by === actorId) throw new HttpError(403, "Le créateur ne peut pas approuver son propre contenu.");
     const now = utcNow();
     if (approve) {
-      db.prepare(`UPDATE posts SET status='approved', approved_by=?, approved_at=?,
+      await db.prepare(`UPDATE posts SET status='approved', approved_by=?, approved_at=?,
         rejection_reason=NULL, updated_by=?, updated_at=? WHERE id=?`).run(actorId, now, actorId, now, id);
-      addAudit(db, actorId, "post.approved", "post", id);
+      await addAudit(db, actorId, "post.approved", "post", id);
     } else {
       const cleanedReason = reason.trim().slice(0, 500);
-      db.prepare(`UPDATE posts SET status='rejected', approved_by=NULL, approved_at=NULL,
+      await db.prepare(`UPDATE posts SET status='rejected', approved_by=NULL, approved_at=NULL,
         rejection_reason=?, updated_by=?, updated_at=? WHERE id=?`).run(cleanedReason, actorId, now, id);
-      addAudit(db, actorId, "post.rejected", "post", id, cleanedReason);
+      await addAudit(db, actorId, "post.rejected", "post", id, cleanedReason);
     }
-    return getPost(id);
-  } finally { db.close(); }
+    return await getPost(id);
+  } finally { await db.close(); }
 }
 
-export function recordManualPublication(actorId: number, id: number, value: unknown) {
+export async function recordManualPublication(actorId: number, id: number, value: unknown) {
   const url = validateHttpsUrl(value, "L’URL de publication");
   const db = connectDatabase();
   try {
-    const row = db.prepare("SELECT status FROM posts WHERE id=? AND is_demo=0").get(id) as { status: string } | undefined;
+    const row = await db.prepare("SELECT status FROM posts WHERE id=? AND is_demo=0").get(id) as { status: string } | undefined;
     if (!row) throw new HttpError(404, "Contenu introuvable.");
     if (row.status !== "approved") throw new HttpError(400, "Seul un contenu approuvé peut être consigné comme publié.");
     const now = utcNow();
-    db.prepare(`UPDATE posts SET status='published_manual', published_by=?, published_at=?,
+    await db.prepare(`UPDATE posts SET status='published_manual', published_by=?, published_at=?,
       published_url=?, updated_by=?, updated_at=? WHERE id=?`).run(actorId, now, url, actorId, now, id);
-    addAudit(db, actorId, "post.published_manual", "post", id);
-    return getPost(id);
-  } finally { db.close(); }
+    await addAudit(db, actorId, "post.published_manual", "post", id);
+    return await getPost(id);
+  } finally { await db.close(); }
 }
 
-export function getPostImage(id: number) {
+export async function getPostImage(id: number) {
   const db = connectDatabase();
   try {
-    const row = db.prepare("SELECT image_data, image_mime FROM posts WHERE id=? AND is_demo=0").get(id) as { image_data: Uint8Array; image_mime: string } | undefined;
+    const row = await db.prepare("SELECT image_data, image_mime FROM posts WHERE id=? AND is_demo=0").get(id) as { image_data: Uint8Array; image_mime: string } | undefined;
     return row?.image_data && row.image_mime === "image/jpeg"
       ? { data: Buffer.from(row.image_data), mime: row.image_mime } : null;
-  } finally { db.close(); }
+  } finally { await db.close(); }
 }
 
-export function savePostImage(actorId: number, id: number, bytes: Buffer, mime: string) {
+export async function savePostImage(actorId: number, id: number, bytes: Buffer, mime: string) {
   if (mime !== "image/jpeg" || bytes.length < 4 || bytes.length > 2_500_000
     || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes.at(-2) !== 0xff || bytes.at(-1) !== 0xd9) {
     throw new HttpError(400, "La photo recadrée doit être un JPEG valide de 2,5 Mo maximum.");
   }
   const db = connectDatabase();
   try {
-    const row = db.prepare("SELECT status FROM posts WHERE id=? AND is_demo=0").get(id) as { status: string } | undefined;
+    const row = await db.prepare("SELECT status FROM posts WHERE id=? AND is_demo=0").get(id) as { status: string } | undefined;
     if (!row) throw new HttpError(404, "Contenu introuvable.");
     if (row.status === "published_manual") throw new HttpError(400, "Une publication consignée ne peut plus être modifiée.");
-    db.prepare(`UPDATE posts SET image_data=?, image_mime=?,
+    await db.prepare(`UPDATE posts SET image_data=?, image_mime=?,
       status=CASE WHEN status IN ('pending','approved') THEN 'draft' ELSE status END,
       approved_by=NULL, approved_at=NULL, rejection_reason=NULL, updated_by=?,
       version=version+1, updated_at=? WHERE id=?`).run(bytes, mime, actorId, utcNow(), id);
-    addAudit(db, actorId, "post.image_added", "post", id, `format=jpeg; size=${bytes.length}`);
-  } finally { db.close(); }
+    await addAudit(db, actorId, "post.image_added", "post", id, `format=jpeg; size=${bytes.length}`);
+  } finally { await db.close(); }
 }
 
-export function deletePostImage(actorId: number, id: number) {
+export async function deletePostImage(actorId: number, id: number) {
   const db = connectDatabase();
   try {
-    const row = db.prepare("SELECT status, image_data FROM posts WHERE id=? AND is_demo=0").get(id) as { status: string; image_data: Uint8Array | null } | undefined;
+    const row = await db.prepare("SELECT status, image_data FROM posts WHERE id=? AND is_demo=0").get(id) as { status: string; image_data: Uint8Array | null } | undefined;
     if (!row) throw new HttpError(404, "Contenu introuvable.");
     if (row.status === "published_manual") throw new HttpError(400, "Une publication consignée ne peut plus être modifiée.");
     if (!row.image_data) return;
-    db.prepare(`UPDATE posts SET image_data=NULL, image_mime=NULL,
+    await db.prepare(`UPDATE posts SET image_data=NULL, image_mime=NULL,
       status=CASE WHEN status IN ('pending','approved') THEN 'draft' ELSE status END,
       approved_by=NULL, approved_at=NULL, rejection_reason=NULL, updated_by=?,
       version=version+1, updated_at=? WHERE id=?`).run(actorId, utcNow(), id);
-    addAudit(db, actorId, "post.image_removed", "post", id);
-  } finally { db.close(); }
+    await addAudit(db, actorId, "post.image_removed", "post", id);
+  } finally { await db.close(); }
 }
 
-export function dashboard() {
+export async function dashboard() {
   const db = connectDatabase();
   try {
-    const counts = Object.fromEntries((db.prepare(
+    const counts = Object.fromEntries((await db.prepare(
       "SELECT status, COUNT(*) AS count FROM posts WHERE is_demo=0 GROUP BY status",
     ).all() as { status: string; count: number }[]).map((row) => [row.status, row.count]));
-    const seo = db.prepare(
+    const seo = await db.prepare(
       `SELECT SUM(clicks) AS clicks, SUM(impressions) AS impressions,
        CASE WHEN SUM(impressions)>0 THEN SUM(clicks)*1.0/SUM(impressions) ELSE NULL END AS ctr,
        CASE WHEN SUM(impressions)>0 THEN SUM(average_position*impressions)/SUM(impressions) ELSE NULL END AS average_position,
@@ -333,19 +333,19 @@ export function dashboard() {
       pending_approvals: counts.pending ?? 0,
       seo: seo ?? { clicks: null, impressions: null, ctr: null, average_position: null, latest_date: null },
     };
-  } finally { db.close(); }
+  } finally { await db.close(); }
 }
 
-export function seoMetrics() {
+export async function seoMetrics() {
   const db = connectDatabase();
   try {
-    return db.prepare(
+    return await db.prepare(
       "SELECT metric_date, query_text, page_path, clicks, impressions, ctr, average_position, source FROM seo_metrics WHERE source!='demo' ORDER BY metric_date DESC, clicks DESC",
     ).all();
-  } finally { db.close(); }
+  } finally { await db.close(); }
 }
 
-export function saveSeoMetric(actorId: number, data: JsonObject) {
+export async function saveSeoMetric(actorId: number, data: JsonObject) {
   const metricDate = text(data, "metric_date", "date de mesure", 10);
   if (!/^\d{4}-(0[1-9]|1[0-2])-01$/.test(metricDate)) {
     throw new HttpError(400, "La date de mesure doit correspondre au premier jour du mois.");
@@ -368,16 +368,16 @@ export function saveSeoMetric(actorId: number, data: JsonObject) {
   const ctr = impressions === 0 ? 0 : (clicks as number) / (impressions as number);
   const db = connectDatabase();
   try {
-    db.prepare(`INSERT INTO seo_metrics (metric_date, query_text, page_path, clicks, impressions, ctr, average_position, source)
+    await db.prepare(`INSERT INTO seo_metrics (metric_date, query_text, page_path, clicks, impressions, ctr, average_position, source)
       VALUES (?, ?, ?, ?, ?, ?, ?, 'manual') ON CONFLICT(metric_date, query_text, page_path) DO UPDATE SET
       clicks=excluded.clicks, impressions=excluded.impressions, ctr=excluded.ctr,
       average_position=excluded.average_position, source='manual'`).run(
       metricDate, query, page, clicks as number, impressions as number, ctr, position,
     );
-    addAudit(db, actorId, "seo.metric_created", "seo_metric", `${metricDate}:${query}:${page}`, "source=manual");
-    return db.prepare("SELECT * FROM seo_metrics WHERE metric_date=? AND query_text=? AND page_path=?")
+    await addAudit(db, actorId, "seo.metric_created", "seo_metric", `${metricDate}:${query}:${page}`, "source=manual");
+    return await db.prepare("SELECT * FROM seo_metrics WHERE metric_date=? AND query_text=? AND page_path=?")
       .get(metricDate, query, page);
-  } finally { db.close(); }
+  } finally { await db.close(); }
 }
 
 function validatePeriod(period: unknown): asserts period is string {
@@ -386,11 +386,11 @@ function validatePeriod(period: unknown): asserts period is string {
   }
 }
 
-export function monthlyReport(period: unknown) {
+export async function monthlyReport(period: unknown) {
   validatePeriod(period);
   const db = connectDatabase();
   try {
-    const rows = db.prepare(
+    const rows = await db.prepare(
       "SELECT metric_key, value, source_note, updated_at FROM monthly_kpis WHERE period=? ORDER BY metric_key",
     ).all(period) as { metric_key: string; value: number; source_note: string; updated_at: string }[];
     const latest = rows.reduce<{ source_note: string; updated_at: string } | null>(
@@ -402,10 +402,10 @@ export function monthlyReport(period: unknown) {
       source_note: latest?.source_note ?? "",
       updated_at: latest?.updated_at ?? null,
     };
-  } finally { db.close(); }
+  } finally { await db.close(); }
 }
 
-export function saveMonthlyReport(actorId: number, data: JsonObject) {
+export async function saveMonthlyReport(actorId: number, data: JsonObject) {
   const period = data.period;
   validatePeriod(period);
   const metrics = data.metrics;
@@ -430,47 +430,47 @@ export function saveMonthlyReport(actorId: number, data: JsonObject) {
   const db = connectDatabase();
   try {
     for (const [key, value] of Object.entries(normalized)) {
-      if (value === null) db.prepare("DELETE FROM monthly_kpis WHERE period=? AND metric_key=?").run(period, key);
-      else db.prepare(`INSERT INTO monthly_kpis (period, metric_key, value, source_note, updated_by, updated_at)
+      if (value === null) await db.prepare("DELETE FROM monthly_kpis WHERE period=? AND metric_key=?").run(period, key);
+      else await db.prepare(`INSERT INTO monthly_kpis (period, metric_key, value, source_note, updated_by, updated_at)
         VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(period, metric_key) DO UPDATE SET
         value=excluded.value, source_note=excluded.source_note, updated_by=excluded.updated_by,
         updated_at=excluded.updated_at`).run(period, key, value, cleanedSource, actorId, utcNow());
     }
-    addAudit(db, actorId, "report.monthly_updated", "monthly_report", period, `metrics=${Object.values(normalized).filter((value) => value !== null).length}`);
-    return monthlyReport(period);
-  } finally { db.close(); }
+    await addAudit(db, actorId, "report.monthly_updated", "monthly_report", period, `metrics=${Object.values(normalized).filter((value) => value !== null).length}`);
+    return await monthlyReport(period);
+  } finally { await db.close(); }
 }
 
-export function auditEvents(limit = 100) {
+export async function auditEvents(limit = 100) {
   const db = connectDatabase();
   try {
-    return db.prepare(
+    return await db.prepare(
       `SELECT a.id, a.action, a.resource_type, a.resource_id, a.details, a.created_at,
        u.display_name AS actor FROM audit_events a LEFT JOIN users u ON u.id=a.actor_id
        ORDER BY a.id DESC LIMIT ?`,
     ).all(Math.min(Math.max(limit, 1), 200));
-  } finally { db.close(); }
+  } finally { await db.close(); }
 }
 
-export function recordAiGeneration(actorId: number, model: string, channel: string, listingId: number | null) {
+export async function recordAiGeneration(actorId: number, model: string, channel: string, listingId: number | null) {
   const db = connectDatabase();
   try {
-    addAudit(db, actorId, "ai.content_generated", "ai_generation", listingId,
+    await addAudit(db, actorId, "ai.content_generated", "ai_generation", listingId,
       `model=${model}; channel=${channel}; listing_id=${listingId ?? ""}; instructions=v1`);
-  } finally { db.close(); }
+  } finally { await db.close(); }
 }
 
-export function recordIntegrationCheck(actorId: number, integrationId: string, succeeded: boolean, message: string) {
+export async function recordIntegrationCheck(actorId: number, integrationId: string, succeeded: boolean, message: string) {
   const db = connectDatabase();
   try {
-    addAudit(db, actorId, succeeded ? "integration.check_succeeded" : "integration.check_failed", "integration", integrationId, message);
-  } finally { db.close(); }
+    await addAudit(db, actorId, succeeded ? "integration.check_succeeded" : "integration.check_failed", "integration", integrationId, message);
+  } finally { await db.close(); }
 }
 
-export function latestIntegrationChecks() {
+export async function latestIntegrationChecks() {
   const db = connectDatabase();
   try {
-    const rows = db.prepare(
+    const rows = await db.prepare(
       "SELECT action, resource_id, details, created_at FROM audit_events WHERE resource_type='integration' ORDER BY id DESC LIMIT 100",
     ).all() as { action: string; resource_id: string; details: string; created_at: string }[];
     const latest: Record<string, { succeeded: boolean; message: string; checked_at: string }> = {};
@@ -482,21 +482,21 @@ export function latestIntegrationChecks() {
       };
     }
     return latest;
-  } finally { db.close(); }
+  } finally { await db.close(); }
 }
 
-export function initAdmin(username: string, displayName: string, password: string) {
-  initializeDatabase();
+export async function initAdmin(username: string, displayName: string, password: string) {
+  await initializeDatabase();
   const db = connectDatabase();
   try {
-    const count = (db.prepare("SELECT COUNT(*) AS count FROM users WHERE role='admin' AND active=1").get() as { count: number }).count;
+    const count = (await db.prepare("SELECT COUNT(*) AS count FROM users WHERE role='admin' AND active=1").get() as { count: number }).count;
     if (count) throw new HttpError(400, "Un administrateur actif existe déjà.");
-  } finally { db.close(); }
-  return createUser(null, { username, display_name: displayName, password, role: "admin" });
+  } finally { await db.close(); }
+  return await createUser(null, { username, display_name: displayName, password, role: "admin" });
 }
 
-export function ensureDatabaseInitialized() {
-  initializeDatabase();
+export async function ensureDatabaseInitialized() {
+  await initializeDatabase();
 }
 
 export function isEditRole(user: User) {
