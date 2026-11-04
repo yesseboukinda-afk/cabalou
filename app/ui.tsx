@@ -84,6 +84,15 @@ export function CabalouApp() {
   const [loginPassword, setLoginPassword] = useState("");
   const [reportPeriod, setReportPeriod] = useState(monthNow());
 
+  useEffect(() => {
+    if (!error && !notice) return;
+    const timeout = window.setTimeout(() => {
+      setError("");
+      setNotice("");
+    }, 3000);
+    return () => window.clearTimeout(timeout);
+  }, [error, notice]);
+
   const request = useCallback(async (url: string, method = "GET", payload?: Payload, file?: File) => {
     const headers: Record<string, string> = {};
     if (method !== "GET") headers["x-csrf-token"] = csrf;
@@ -243,8 +252,7 @@ export function CabalouApp() {
         <header className="topbar"><div className="breadcrumb">Marketing <span>/</span> <strong>{navigation.find((item) => item.id === view)?.label}</strong></div>
           <div className="topbar-right"><span className="date-label">{new Date().toLocaleDateString("fr-FR", { dateStyle: "long" })}</span><span className="top-avatar">{user.display_name.slice(0, 1).toUpperCase()}</span></div></header>
         <div className="page-content">
-          {notice && <div className="notice" role="status">{notice}</div>}
-          <Alert error={error} />
+          {(error || notice) && <div className={`toast visible${error ? " error" : ""}`} role={error ? "alert" : "status"}>{error || notice}</div>}
           {view === "dashboard" && <Dashboard data={data} setView={setView} />}
           {view === "content" && <ContentView data={data} user={user} request={request} mutate={mutate} busy={busy} canEdit={canEdit} canReview={canReview} />}
           {view === "calendar" && <CalendarView data={data} setView={setView} />}

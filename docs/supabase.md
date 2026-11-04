@@ -27,7 +27,7 @@ Dans Vercel et dans l’environnement local utilisé pour créer des comptes,
 configurez également :
 
 - `SUPABASE_URL` : URL HTTPS du projet Supabase.
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY` : clé anon/publishable du projet.
+- `SUPABASE_ANON_KEY` : clé anon/publishable du projet.
 - `SUPABASE_SERVICE_ROLE_KEY` : clé service role, utilisée uniquement côté
   serveur pour créer des comptes Auth. Ne lui donnez jamais le préfixe
   `NEXT_PUBLIC_` et ne la partagez pas.

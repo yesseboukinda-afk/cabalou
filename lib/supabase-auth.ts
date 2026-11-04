@@ -28,14 +28,14 @@ type AuthResponse = {
 
 function config(admin = false) {
   const url = process.env.SUPABASE_URL?.replace(/\/+$/, "");
-  const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const anonKey = process.env.SUPABASE_ANON_KEY;
   const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !anonKey || (admin && !serviceKey)) {
     throw new SupabaseAuthError(
       503,
       admin
-        ? "Configurez SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY et SUPABASE_SERVICE_ROLE_KEY."
-        : "Configurez SUPABASE_URL et NEXT_PUBLIC_SUPABASE_ANON_KEY.",
+        ? "Configurez SUPABASE_URL, SUPABASE_ANON_KEY et SUPABASE_SERVICE_ROLE_KEY."
+        : "Configurez SUPABASE_URL et SUPABASE_ANON_KEY.",
     );
   }
   return { url, key: admin ? serviceKey! : anonKey };

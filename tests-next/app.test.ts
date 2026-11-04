@@ -33,11 +33,11 @@ function cookieHeader(response: Response): string {
 before(async () => {
   supabaseDatabaseUrl = process.env.CABALOU_SUPABASE_DATABASE_URL;
   delete process.env.CABALOU_SUPABASE_DATABASE_URL;
-  for (const key of ["SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY"]) {
+  for (const key of ["SUPABASE_URL", "SUPABASE_ANON_KEY", "SUPABASE_SERVICE_ROLE_KEY"]) {
     originalAuthEnv[key] = process.env[key];
   }
   process.env.SUPABASE_URL = "https://test.supabase.co";
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "test-anon-key";
+  process.env.SUPABASE_ANON_KEY = "test-anon-key";
   process.env.SUPABASE_SERVICE_ROLE_KEY = "test-service-role-key";
   originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input, init) => {
