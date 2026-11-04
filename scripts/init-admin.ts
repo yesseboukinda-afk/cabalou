@@ -48,10 +48,10 @@ async function main() {
     const username = (await terminal.question("Nom d’utilisateur administrateur : ")).trim();
     const displayName = (await terminal.question("Nom affiché : ")).trim();
     terminal.close();
-    const password = await hiddenPrompt("Mot de passe (12 caractères minimum) : ");
+    const password = await hiddenPrompt("Mot de passe : ");
     const confirmation = await hiddenPrompt("Confirmez le mot de passe : ");
-    if (password.length < 12 || password !== confirmation) {
-      throw new Error("Les mots de passe doivent correspondre et comporter au moins 12 caractères.");
+    if (!password || password.length > 256 || password !== confirmation) {
+      throw new Error("Les mots de passe doivent être identiques, non vides et ne pas dépasser 256 caractères.");
     }
     const { initAdmin } = await import("../lib/service");
     const userId = initAdmin(username, displayName, password);

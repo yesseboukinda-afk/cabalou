@@ -56,8 +56,11 @@ export function createUser(actorId: number | null, data: JsonObject): number {
   const username = text(data, "username", "nom d’utilisateur", 80);
   const displayName = text(data, "display_name", "nom affiché", 80);
   const role = text(data, "role", "rôle", 30);
-  const password = text(data, "password", "mot de passe", 256);
-  if (password.length < 12) throw new HttpError(400, "Le mot de passe doit comporter au moins 12 caractères.");
+  const password = data.password;
+  if (typeof password !== "string" || password.length === 0) {
+    throw new HttpError(400, "Le mot de passe est obligatoire.");
+  }
+  if (password.length > 256) throw new HttpError(400, "Le mot de passe est limité à 256 caractères.");
   if (!["admin", "marketing_manager", "operator", "viewer"].includes(role)) {
     throw new HttpError(400, "Rôle inconnu.");
   }

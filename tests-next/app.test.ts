@@ -46,6 +46,19 @@ describe("migration Next Cabalou", () => {
     assert.equal(security.authenticate("admin", "incorrect"), null);
   });
 
+  it("accepte tout mot de passe non vide jusqu’à 256 caractères", () => {
+    const shortPasswordUser = service.createUser(adminId, {
+      username: "short-password", display_name: "Mot de passe court", password: "Admin123!", role: "operator",
+    });
+    assert.equal(security.authenticate("short-password", "Admin123!")?.id, shortPasswordUser);
+    assert.throws(() => service.createUser(adminId, {
+      username: "empty-password", display_name: "Mot de passe vide", password: "", role: "operator",
+    }), /obligatoire/);
+    assert.throws(() => service.createUser(adminId, {
+      username: "long-password", display_name: "Mot de passe trop long", password: "a".repeat(257), role: "operator",
+    }), /256 caractères/);
+  });
+
   it("applique les transitions de validation et interdit l’auto-approbation", () => {
     const post = service.savePost(adminId, null, {
       title: "Test Cabalou", channel: "facebook", body: "Brouillon", destination_url: "https://cabalou.net/",
