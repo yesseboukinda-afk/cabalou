@@ -781,6 +781,13 @@ input:focus, select:focus, textarea:focus { border-color: #8c3f32; box-shadow: 0
 .notice { border-color: #cee3d5; background: var(--green-pale); color: var(--green-dark); }
 .stack-form { display: grid; gap: 13px; }
 .stack-form label, .form-grid label, .report-group label, .report-source, .inline-label { display: grid; gap: 6px; color: #536159; font-size: 11px; font-weight: 650; }
+.password-field { display: grid; min-width: 0; gap: 6px; color: #536159; font-size: 11px; font-weight: 650; }
+.password-input { position: relative; }
+.password-input input { padding-right: 48px; }
+.password-toggle { position: absolute; top: 50%; right: 5px; display: grid; width: 34px; height: 34px; place-items: center; transform: translateY(-50%); border: 0; border-radius: 6px; background: transparent; color: #77736f; }
+.password-toggle:hover { background: #f0eeea; color: #171717; }
+.password-toggle:focus-visible { outline: 2px solid #8c3f32; outline-offset: 1px; }
+.password-toggle svg { width: 18px; height: 18px; stroke: currentColor; stroke-width: 1.7; }
 .stack-form input, .form-grid input, .form-grid select, .form-grid textarea, .report-group input, .report-source input, .inline-label input, table select {
   width: 100%; min-height: 38px; padding: 9px 10px; border: 1px solid #dfe6e1; border-radius: 7px; background: #fff; color: var(--ink);
 }

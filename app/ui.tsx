@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState, type ReactNode } from "react";
+import { FormEvent, useCallback, useEffect, useState, type ChangeEvent, type ReactNode } from "react";
 
 type User = { id: number; username: string; display_name: string; role: string };
 type Row = Record<string, unknown>;
@@ -197,7 +197,7 @@ export function CabalouApp() {
         <p className="muted">Accès réservé aux utilisateurs créés par l’administrateur.</p>
         <form className="stack-form" onSubmit={login}>
           <label>Nom d’utilisateur<input value={loginName} onChange={(event) => setLoginName(event.target.value)} autoComplete="username" required maxLength={80} /></label>
-          <label>Mot de passe<input value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} type="password" autoComplete="current-password" required /></label>
+          <PasswordField id="login-password" label="Mot de passe" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} autoComplete="current-password" required />
           <button className="button button-primary full-width" disabled={busy}>{busy ? "Connexion…" : "Se connecter"}</button>
           <Alert error={error} />
         </form>
@@ -258,6 +258,55 @@ function Brand() {
   return <a className="brand" href="#" onClick={(event) => event.preventDefault()} aria-label="Cabalou">
     <img className="brand-mark" src="/logo.png" alt="" /><span>Cabalou<span className="brand-sub">Marketing</span></span>
   </a>;
+}
+
+function PasswordField({
+  id,
+  label,
+  value,
+  onChange,
+  autoComplete,
+  required = false,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (event: ChangeEvent<HTMLInputElement>) => void;
+  autoComplete: string;
+  required?: boolean;
+}) {
+  const [visible, setVisible] = useState(false);
+  return (
+    <div className="password-field">
+      <label htmlFor={id}>{label}</label>
+      <div className="password-input">
+        <input
+          id={id}
+          type={visible ? "text" : "password"}
+          value={value}
+          onChange={(event) => {
+            onChange(event);
+            if (!event.target.value) setVisible(false);
+          }}
+          autoComplete={autoComplete}
+          maxLength={256}
+          required={required}
+        />
+        <button
+          type="button"
+          className="password-toggle"
+          aria-label={visible ? "Masquer le mot de passe" : "Afficher le mot de passe"}
+          aria-pressed={visible}
+          onClick={() => setVisible((current) => !current)}
+        >
+          <svg aria-hidden="true" viewBox="0 0 24 24" fill="none">
+            <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function Alert({ error }: { error: string }) {
@@ -620,7 +669,7 @@ function UsersView({ data, request, mutate, busy }: { data: Record<string, unkno
   return <>
     <PageHeading eyebrow="ADMINISTRATION" title="Utilisateurs" description="Gérez les comptes et les rôles d’accès." />
     <section className="panel"><div className="panel-heading"><div><h2>Créer un compte</h2></div></div>
-      <form className="form-grid" onSubmit={(event) => void create(event)}><label>Nom d’utilisateur<input required maxLength={80} value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} /></label><label>Nom affiché<input required maxLength={80} value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} /></label><label>Mot de passe<input required type="password" maxLength={256} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} /></label><label>Rôle<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>{Object.entries(roleLabels).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label><button className="button button-primary" disabled={busy}>Créer l’utilisateur</button></form>
+      <form className="form-grid" onSubmit={(event) => void create(event)}><label>Nom d’utilisateur<input required maxLength={80} value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} /></label><label>Nom affiché<input required maxLength={80} value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} /></label><PasswordField id="new-user-password" label="Mot de passe" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} autoComplete="new-password" required /><label>Rôle<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>{Object.entries(roleLabels).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label><button className="button button-primary" disabled={busy}>Créer l’utilisateur</button></form>
     </section>
     <section className="panel"><div className="panel-heading"><div><h2>Comptes</h2></div></div><div className="table-scroll"><table><thead><tr><th>Compte</th><th>Rôle</th><th>État</th><th>Accès</th></tr></thead><tbody>{users.map((item) => <tr key={String(item.id)}><td><strong>{display(item.display_name)}</strong><small className="table-sub">{display(item.username)}</small></td><td><select aria-label={`Rôle de ${item.username}`} value={String(item.role)} onChange={(event) => void mutate(() => request(`/api/users/${item.id}`, "PATCH", { role: event.target.value, active: Boolean(item.active) }), "Rôle mis à jour.", "users")}>{Object.entries(roleLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></td><td>{item.active ? "Actif" : "Désactivé"}</td><td><button className="text-button" disabled={busy} onClick={() => void mutate(() => request(`/api/users/${item.id}`, "PATCH", { role: item.role, active: !item.active }), "Accès mis à jour.", "users")}>{item.active ? "Désactiver" : "Réactiver"}</button></td></tr>)}</tbody></table></div></section>
   </>;
