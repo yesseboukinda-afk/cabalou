@@ -11,6 +11,7 @@ let supabaseDatabaseUrl: string | undefined;
 let service: typeof import("../lib/service");
 let security: typeof import("../lib/security");
 let workflows: typeof import("../lib/workflows");
+let database: typeof import("../lib/db");
 let route: typeof import("../app/api/[...path]/route");
 let adminId = 0;
 let managerId = 0;
@@ -23,6 +24,7 @@ before(async () => {
   databasePath = join(directory, "test.sqlite3");
   process.env.CABALOU_DB_PATH = databasePath;
   process.env.CABALOU_SESSION_SECRET = "test-session-secret-0123456789-abcdefgh";
+  database = await import("../lib/db");
   service = await import("../lib/service");
   security = await import("../lib/security");
   workflows = await import("../lib/workflows");
@@ -46,6 +48,11 @@ after(async () => {
 });
 
 describe("migration Next Cabalou", () => {
+  it("convertit les identifiants PostgreSQL en nombres sûrs", () => {
+    assert.equal(database.parsePostgresBigint("42"), 42);
+    assert.throws(() => database.parsePostgresBigint("9007199254740992"), /dépasse la plage/);
+  });
+
   it("authentifie les mots de passe PBKDF2 conservés dans SQLite", async () => {
     assert.equal((await security.authenticate("admin", "Password admin local 123!"))?.id, adminId);
     assert.equal(await security.authenticate("admin", "incorrect"), null);

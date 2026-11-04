@@ -39,6 +39,14 @@ function validateSupabaseDatabaseUrl(value: string): void {
   }
 }
 
+export function parsePostgresBigint(value: string): number {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new Error("La valeur PostgreSQL dépasse la plage d’entiers prise en charge.");
+  }
+  return parsed;
+}
+
 function postgresQuery(query: string): string {
   let index = 0;
   return query.replace(/\s+COLLATE NOCASE/gi, "").replace(/\?/g, () => `$${++index}`);
@@ -54,6 +62,14 @@ export function connectDatabase(): DatabaseConnection {
       prepare: false,
       connect_timeout: 10,
       ssl: "require",
+      types: {
+        bigint: {
+          to: 20,
+          from: [20],
+          serialize: (value: number | bigint) => value.toString(),
+          parse: parsePostgresBigint,
+        },
+      },
     });
     return {
       prepare(query) {
