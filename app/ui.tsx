@@ -71,10 +71,23 @@ function dateLabel(value: unknown) {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString("fr-FR");
 }
 
+function LoadingText() {
+  return (
+    <span className="loader" role="status" aria-label="Chargement…">
+      {"Chargement…".split("").map((letter, index) => (
+        <span key={`${letter}-${index}`} aria-hidden="true" style={{ animationDelay: `${index * 70}ms` }}>
+          {letter}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 export function CabalouApp() {
   const [user, setUser] = useState<User | null>(null);
   const [csrf, setCsrf] = useState("");
   const [view, setView] = useState<View>("dashboard");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [data, setData] = useState<Record<string, unknown>>({});
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -83,6 +96,15 @@ export function CabalouApp() {
   const [loginName, setLoginName] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [reportPeriod, setReportPeriod] = useState(monthNow());
+
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSidebarOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [sidebarOpen]);
 
   useEffect(() => {
     if (!error && !notice) return;
@@ -186,6 +208,7 @@ export function CabalouApp() {
   }
 
   async function logout() {
+    setSidebarOpen(false);
     setBusy(true);
     try {
       await request("/api/logout", "POST", {});
@@ -197,15 +220,23 @@ export function CabalouApp() {
     } finally { setBusy(false); }
   }
 
-  if (loading) return <main className="loading-screen">Chargement de Cabalou…</main>;
+  if (loading) return (
+    <main className="login-layout initial-loading" aria-busy="true">
+      <div className="login-auth-loading">
+        <div className="login-auth-content">
+          <LoadingText />
+        </div>
+      </div>
+    </main>
+  );
   if (!user) return (
-    <main className="login-layout">
-      <div className="login-editorial">
+    <main className={`login-layout${busy ? " login-authenticating" : ""}`} aria-busy={busy}>
+      <div className="login-editorial" aria-hidden={busy}>
         <img className="login-editorial-logo" src="/logo.png" alt="Logo Cabalou" />
         <p className="editorial-title">L’image<br />de marque<br /><em>commence ici.</em></p>
         <p className="editorial-caption">Contenus · calendrier · performance</p>
       </div>
-      <section className="login-card">
+      <section className="login-card" aria-hidden={busy} inert={busy}>
         <Brand />
         <p className="eyebrow">ESPACE PRIVÉ</p>
         <h1>Bienvenue.</h1>
@@ -213,11 +244,18 @@ export function CabalouApp() {
         <form className="stack-form" onSubmit={login}>
           <label>Nom d’utilisateur<input value={loginName} onChange={(event) => setLoginName(event.target.value)} autoComplete="username" required maxLength={80} /></label>
           <PasswordField id="login-password" label="Mot de passe" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} autoComplete="current-password" required />
-          <button className="button button-primary full-width" disabled={busy}>{busy ? "Connexion…" : "Se connecter"}</button>
+          <button className="button button-primary full-width" disabled={busy}>Se connecter</button>
           <Alert error={error} />
         </form>
         <p className="fine-print">Les publications ne sont jamais envoyées automatiquement. Les services externes restent configurables depuis l’espace Intégrations.</p>
       </section>
+      {busy && (
+        <div className="login-auth-loading">
+          <div className="login-auth-content">
+            <LoadingText />
+          </div>
+        </div>
+      )}
     </main>
   );
 
@@ -230,11 +268,12 @@ export function CabalouApp() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      {sidebarOpen && <button className="sidebar-backdrop" aria-label="Fermer le menu" onClick={() => setSidebarOpen(false)} />}
+      <aside className={`sidebar${sidebarOpen ? " sidebar-open" : ""}`}>
         <Brand />
         <div className="workspace-label">ESPACE DE TRAVAIL</div>
         <nav className="main-nav" aria-label="Navigation principale">
-          {visibleNav.map((item) => <button key={item.id} className={`nav-item ${view === item.id ? "active" : ""}`} onClick={() => setView(item.id)}>
+          {visibleNav.map((item) => <button key={item.id} className={`nav-item ${view === item.id ? "active" : ""}`} aria-current={view === item.id ? "page" : undefined} onClick={() => { setView(item.id); setSidebarOpen(false); }}>
             <span className="nav-icon">{item.icon}</span>{item.label}
             {item.id === "content" && Number((data.dashboard as Row | undefined)?.pending_approvals ?? 0) > 0
               && <span className="nav-count">{display((data.dashboard as Row).pending_approvals)}</span>}
@@ -249,7 +288,9 @@ export function CabalouApp() {
         </div>
       </aside>
       <div className="main-column">
-        <header className="topbar"><div className="breadcrumb">Marketing <span>/</span> <strong>{navigation.find((item) => item.id === view)?.label}</strong></div>
+        <header className="topbar">
+          <button className="mobile-menu icon-button" aria-label={sidebarOpen ? "Fermer le menu" : "Ouvrir le menu"} aria-expanded={sidebarOpen} onClick={() => setSidebarOpen((open) => !open)}>☰</button>
+          <div className="breadcrumb">Marketing <span>/</span> <strong>{navigation.find((item) => item.id === view)?.label}</strong></div>
           <div className="topbar-right"><span className="date-label">{new Date().toLocaleDateString("fr-FR", { dateStyle: "long" })}</span><span className="top-avatar">{user.display_name.slice(0, 1).toUpperCase()}</span></div></header>
         <div className="page-content">
           {(error || notice) && <div className={`toast visible${error ? " error" : ""}`} role={error ? "alert" : "status"}>{error || notice}</div>}
@@ -337,8 +378,22 @@ function Dashboard({ data, setView }: { data: Record<string, unknown>; setView: 
   const counts = (summary.posts ?? {}) as Record<string, number>;
   const seo = (summary.seo ?? {}) as Row;
   return <>
-    <PageHeading eyebrow="VOTRE ACTIVITÉ" title="Vue d’ensemble" description="Un aperçu de vos contenus et de votre visibilité organique."
-      action={<button className="button button-primary" onClick={() => setView("content")}>＋ Créer un contenu</button>} />
+    <section className="dashboard-hero">
+      <div className="dashboard-hero-copy">
+        <p className="dashboard-hero-eyebrow"><span /> ESPACE MARKETING CABALOU</p>
+        <h1>L’esprit Cabalou,<br />dans chaque publication.</h1>
+        <p>Préparez vos contenus, organisez votre calendrier et suivez votre visibilité au même endroit.</p>
+        <button className="button dashboard-hero-action" onClick={() => setView("content")}>Créer un contenu <span aria-hidden="true">↗</span></button>
+      </div>
+      <div className="dashboard-hero-feature">
+        <div className="dashboard-hero-feature-top"><span className="dashboard-hero-feature-icon" aria-hidden="true">✦</span><span className="dashboard-hero-feature-label">À SUIVRE</span></div>
+        <strong>{display(summary.pending_approvals ?? 0)}</strong>
+        <p>contenu(s) en attente de validation</p>
+        <button className="dashboard-hero-link" onClick={() => setView("content")}>Ouvrir les contenus <span aria-hidden="true">→</span></button>
+      </div>
+      <span className="dashboard-hero-orbit" aria-hidden="true" />
+    </section>
+    <div className="dashboard-section-heading"><div><p className="eyebrow">EN UN COUP D’ŒIL</p><h2>Votre activité</h2></div><span>Contenus · calendrier · performance</span></div>
     <div className="kpi-grid">
       <Kpi label="Brouillons" value={counts.draft ?? 0} caption="À préparer ou compléter" />
       <Kpi label="À valider" value={summary.pending_approvals ?? 0} caption="En attente d’approbation" />
@@ -522,6 +577,7 @@ function WorkflowsView({ data, request, mutate, busy, canEdit }: {
     retargeting: [{ key: "external_ref", label: "Référence pseudonymisée" }, { key: "interest_label", label: "Intérêt" }, { key: "source", label: "Source" }, { key: "consent_confirmed", label: "Consentement publicitaire vérifié", type: "checkbox" }],
   };
   const listKeys = ["social", "groups", "b2b", "reactivation", "retargeting"];
+  const workflowTabs = [...listKeys, "seo_targets"];
   const createFields = fields[module] ?? [];
   function create(event: FormEvent) {
     event.preventDefault();
@@ -561,7 +617,12 @@ function WorkflowsView({ data, request, mutate, busy, canEdit }: {
 
   return <>
     <PageHeading eyebrow="OBJECTIFS MARKETING" title="Parcours métier" description="Saisissez et suivez les actions locales. Aucun scraping ni envoi automatique." />
-    <div className="workflow-tabs">{[...listKeys, "seo_targets"].map((item) => <button key={item} className={module === item ? "selected" : ""} onClick={() => setModule(item)}>{workflowLabels[item]}</button>)}</div>
+    <div className="workflow-tabs" role="tablist" aria-label="Parcours métier">
+      <div className="workflow-tabs-track">
+        <span className="workflow-tabs-glider" aria-hidden="true" style={{ transform: `translateX(${workflowTabs.indexOf(module) * 100}%)` }} />
+        {workflowTabs.map((item) => <button key={item} type="button" role="tab" aria-selected={module === item} className={module === item ? "selected" : ""} onClick={() => setModule(item)}>{workflowLabels[item]}</button>)}
+      </div>
+    </div>
     {module === "seo_targets" ? <SeoTargets rows={(data.seo_targets ?? []) as Row[]} request={request} mutate={mutate} busy={busy} canEdit={canEdit} /> : <>
       {canEdit && <section className="panel"><div className="panel-heading"><div><h2>Ajouter — {workflowLabels[module]}</h2><p className="muted">N’ajoutez pas de données personnelles dans les résumés ou références.</p></div></div>
         <form className="form-grid" onSubmit={create}>{createFields.map((field) => <WorkflowField key={field.key} field={field} value={form[field.key]} onChange={(value) => setForm({ ...form, [field.key]: value })} />)}
