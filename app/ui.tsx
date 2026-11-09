@@ -1,16 +1,18 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState, type ChangeEvent, type ReactNode } from "react";
+import { classifyCommentSentiment } from "../lib/comment-sentiment";
 
 type User = { id: number; username: string; display_name: string; role: string };
 type Row = Record<string, unknown>;
-type View = "dashboard" | "content" | "calendar" | "workflows" | "seo" | "reports" | "users" | "audit" | "integrations";
+type View = "dashboard" | "content" | "calendar" | "comments" | "workflows" | "seo" | "reports" | "users" | "audit" | "integrations";
 type Payload = Record<string, unknown>;
 
 const navigation: { id: View; label: string; icon: string }[] = [
   { id: "dashboard", label: "Vue d’ensemble", icon: "⌂" },
   { id: "content", label: "Contenus", icon: "▤" },
   { id: "calendar", label: "Calendrier", icon: "▦" },
+  { id: "comments", label: "Veille Meta", icon: "◉" },
   { id: "workflows", label: "Parcours métier", icon: "◎" },
   { id: "seo", label: "SEO & Google", icon: "↗" },
   { id: "reports", label: "Rapports mensuels", icon: "▥" },
@@ -22,6 +24,27 @@ const navigation: { id: View; label: string; icon: string }[] = [
 const workflowLabels: Record<string, string> = {
   social: "Interactions sociales", groups: "Demandes de groupes", b2b: "Prospects B2B",
   reactivation: "Réactivation", retargeting: "Retargeting", seo_targets: "Requêtes SEO",
+};
+
+const sentimentLabels = {
+  positive: "Positif",
+  neutral: "Neutre",
+  negative: "À surveiller · Négatif",
+} as const;
+
+const reactionLabels: Record<string, string> = {
+  LIKE: "J’aime",
+  LOVE: "Adore",
+  CARE: "Solidaire",
+  HAHA: "Amusé",
+  WOW: "Étonné",
+  SAD: "Triste",
+  ANGRY: "En colère",
+  THANKFUL: "Reconnaissant",
+  PRIDE: "Fier",
+  FIRE: "Impressionné",
+  HUNDRED: "100",
+  NONE: "Aucune",
 };
 
 const roleLabels: Record<string, string> = {
@@ -143,6 +166,7 @@ export function CabalouApp() {
       dashboard: ["/api/dashboard", "/api/posts"],
       content: ["/api/posts", "/api/listings"],
       calendar: ["/api/posts"],
+      comments: [],
       workflows: ["/api/workflows"],
       seo: ["/api/seo", "/api/workflows"],
       reports: [`/api/reports?month=${reportPeriod}`],
@@ -297,6 +321,7 @@ export function CabalouApp() {
           {view === "dashboard" && <Dashboard data={data} setView={setView} />}
           {view === "content" && <ContentView data={data} user={user} request={request} mutate={mutate} busy={busy} canEdit={canEdit} canReview={canReview} />}
           {view === "calendar" && <CalendarView data={data} setView={setView} />}
+          {view === "comments" && <MetaCommentsView data={data} request={request} mutate={mutate} setData={setData} busy={busy} canEdit={canEdit} canManage={canReview} />}
           {view === "workflows" && <WorkflowsView data={data} request={request} mutate={mutate} busy={busy} canEdit={canEdit} />}
           {view === "seo" && <SeoView data={data} request={request} mutate={mutate} busy={busy} canEdit={canEdit} />}
           {view === "reports" && <ReportsView data={data} request={request} mutate={mutate} busy={busy} canEdit={canEdit} onMonthChange={setReportPeriod} />}
@@ -307,6 +332,632 @@ export function CabalouApp() {
       </div>
     </div>
   );
+}
+
+function MetaCommentsView({
+  data, request, mutate, setData, busy, canEdit, canManage,
+}: {
+  data: Record<string, unknown>;
+  request: (url: string, method?: string, payload?: Payload) => Promise<Payload | null>;
+  mutate: (operation: () => Promise<unknown>, success: string, target?: View) => Promise<boolean>;
+  setData: React.Dispatch<React.SetStateAction<Record<string, unknown>>>;
+  busy: boolean;
+  canEdit: boolean;
+  canManage: boolean;
+}) {
+  const posts = (data.meta_comments ?? []) as Row[];
+  const fetchedAt = data.meta_comments_fetched_at;
+  const loadedComments = posts.flatMap((post) => Array.isArray(post.comments)
+    ? (post.comments as Row[]).flatMap((comment) => [
+      comment,
+      ...(Array.isArray(comment.replies) ? comment.replies as Row[] : []),
+    ])
+    : []);
+  const sentimentCounts = loadedComments.reduce<Record<"positive" | "neutral" | "negative", number>>((counts, comment) => {
+    counts[classifyCommentSentiment(String(comment.message ?? ""))] += 1;
+    return counts;
+  }, { positive: 0, neutral: 0, negative: 0 });
+  const [loadingComments, setLoadingComments] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState("");
+  const [loadError, setLoadError] = useState("");
+  const [newPostMessage, setNewPostMessage] = useState("");
+  const [selectedPostId, setSelectedPostId] = useState("");
+  const [selectedPanel, setSelectedPanel] = useState<"comments" | "reactions">("comments");
+  const selectedPost = posts.find((post) => String(post.id) === selectedPostId);
+  const visiblePosts = selectedPost ? [selectedPost] : posts;
+
+  const loadComments = useCallback(async (after?: string) => {
+    setLoadingComments(true);
+    setLoadError("");
+    try {
+      const suffix = after ? `?after=${encodeURIComponent(after)}` : "";
+      const result = await request(`/api/meta/comments${suffix}`);
+      setData((previous) => ({
+        ...previous,
+        meta_comments: after
+          ? [...((previous.meta_comments ?? []) as Row[]), ...((result?.posts ?? []) as Row[])]
+            .filter((post, index, all) => all.findIndex((item) => item.id === post.id) === index)
+            .sort((a, b) => Date.parse(String(b.created_time)) - Date.parse(String(a.created_time)))
+          : result?.posts ?? [],
+        meta_comments_fetched_at: after ? previous.meta_comments_fetched_at : result?.fetched_at ?? null,
+        meta_comments_after: result?.posts_after ?? null,
+        meta_comments_has_more: Boolean(result?.posts_has_more),
+      }));
+    } catch (reason) {
+      setLoadError(reason instanceof Error ? reason.message : "Impossible de charger les commentaires.");
+    } finally {
+      setLoadingComments(false);
+    }
+  }, [request, setData]);
+
+  useEffect(() => { void loadComments(); }, [loadComments]);
+
+  async function loadOlderComments(post: Row) {
+    const postId = String(post.id);
+    const cursor = String(post.comments_after ?? "");
+    if (!cursor || loadingOlder) return;
+    setLoadingOlder(postId);
+    setLoadError("");
+    try {
+      const result = await request(`/api/meta/posts/${encodeURIComponent(postId)}/comments?after=${encodeURIComponent(cursor)}`);
+      setData((previous) => ({
+        ...previous,
+        meta_comments: ((previous.meta_comments ?? []) as Row[]).map((current) => current.id === post.id
+          ? {
+            ...current,
+            comments: [...((current.comments ?? []) as Row[]), ...((result?.comments ?? []) as Row[])]
+              .filter((comment, index, all) => all.findIndex((item) => item.id === comment.id) === index)
+              .sort((a, b) => Date.parse(String(b.created_time)) - Date.parse(String(a.created_time))),
+            comments_after: result?.comments_after ?? null,
+            comments_has_more: Boolean(result?.comments_has_more),
+          }
+          : current),
+      }));
+    } catch (reason) {
+      setLoadError(reason instanceof Error ? reason.message : "Impossible de charger les commentaires plus anciens.");
+    } finally {
+      setLoadingOlder("");
+    }
+  }
+
+  async function publishPost(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const message = newPostMessage.trim();
+    if (!message) return;
+    const published = await mutate(() => request("/api/meta/posts", "POST", { message }), "Publication envoyée sur Facebook.", "comments");
+    if (published) {
+      setNewPostMessage("");
+      await loadComments();
+    }
+  }
+
+  return <>
+    <PageHeading eyebrow="ÉCOUTE SOCIALE" title="Veille des commentaires" description="Les plus récents s’affichent d’abord. Ouvrez la veille pour charger les commentaires, puis remontez vers les plus anciens si besoin." action={<button className="button button-primary" disabled={loadingComments || busy} onClick={() => void loadComments()}>{loadingComments ? "Chargement…" : "Actualiser"}</button>} />
+    <section className="panel comments-notice">
+      <p>Publications et commentaires sont lus depuis la Page Meta associée au jeton serveur partagé par les utilisateurs Cabalou. Les changements Meta apparaissent après actualisation; cette veille n’est pas en temps réel. La lecture nécessite <code>pages_read_user_content</code> ou la fonctionnalité Meta <code>Page Public Content Access</code>.</p>
+      <p>Répondre publie immédiatement votre texte sur Facebook. Cette action nécessite l’autorisation Meta <code>pages_manage_engagement</code> et la tâche <code>MODERATE</code> sur la Page.</p>
+      {typeof fetchedAt === "string" && <small>Dernière consultation : {new Date(fetchedAt).toLocaleString("fr-FR")}</small>}
+    </section>
+    <section className="panel meta-sentiment-summary" aria-label="Analyse du sentiment des commentaires">
+      <strong>Sentiment des commentaires chargés</strong>
+      <span className="meta-sentiment meta-sentiment-negative" aria-live="polite"><strong>{sentimentCounts.negative}</strong> négatif(s) à examiner</span>
+      <span className="meta-sentiment meta-sentiment-positive"><strong>{sentimentCounts.positive}</strong> positif(s)</span>
+      <span className="meta-sentiment meta-sentiment-neutral"><strong>{sentimentCounts.neutral}</strong> neutre(s)</span>
+      <small>Analyse lexicale locale indicative; seuls les commentaires actuellement chargés sont comptés.</small>
+    </section>
+    {canEdit && <form className="panel meta-post-composer" onSubmit={(event) => void publishPost(event)}>
+      <label htmlFor="meta-new-post"><strong>Nouvelle publication</strong></label>
+      <textarea id="meta-new-post" value={newPostMessage} maxLength={5000} required placeholder="Que souhaitez-vous partager sur la Page ?" onChange={(event) => setNewPostMessage(event.target.value)} />
+      <button className="button button-primary" disabled={busy || !newPostMessage.trim()}>Publier sur Facebook</button>
+    </form>}
+    {loadError && <p className="form-error" role="alert">{loadError}</p>}
+    {loadError && typeof fetchedAt === "string" && <p className="meta-stale-notice" role="status">Les cartes ci-dessous montrent la dernière lecture réussie; Meta n’a pas fourni de données actualisées. Vérifiez le jeton Meta puis actualisez.</p>}
+    {typeof fetchedAt !== "string" && loadingComments
+      ? <section className="panel"><Empty>Chargement des publications et commentaires récents…</Empty></section>
+      : typeof fetchedAt !== "string"
+      ? <section className="panel"><Empty>Chargez les commentaires pour commencer la veille.</Empty></section>
+      : !posts.length
+        ? <section className="panel"><Empty>Aucune publication ou aucun commentaire trouvé pour cette Page.</Empty></section>
+        : <div className={`meta-post-list${selectedPost ? " meta-post-list-detail" : ""}`}>{visiblePosts.map((post) => {
+          const comments = (Array.isArray(post.comments) ? [...post.comments] as Row[] : [])
+            .sort((a, b) => Date.parse(String(b.created_time)) - Date.parse(String(a.created_time)));
+          return <MetaPostCard
+            key={String(post.id)}
+            post={{ ...post, comments }}
+            request={request}
+            mutate={mutate}
+            setData={setData}
+            busy={busy}
+            canEdit={canEdit}
+            canManage={canManage}
+            loadingOlder={loadingOlder === post.id}
+            onLoadOlder={() => void loadOlderComments(post)}
+            panelOpen={Boolean(selectedPost)}
+            panelMode={selectedPanel}
+            onOpenComments={() => { setSelectedPostId(String(post.id)); setSelectedPanel("comments"); }}
+            onOpenReactions={() => { setSelectedPostId(String(post.id)); setSelectedPanel("reactions"); }}
+            onClosePanel={() => setSelectedPostId("")}
+          />;
+        })}</div>}
+    {Boolean(data.meta_comments_has_more) && <div className="meta-older-posts"><button className="button button-outline" disabled={loadingComments} onClick={() => void loadComments(String(data.meta_comments_after ?? ""))}>{loadingComments ? "Chargement…" : "Charger les publications plus anciennes"}</button></div>}
+  </>;
+}
+
+function MetaPostCard({
+  post, request, mutate, setData, busy, canEdit, canManage, loadingOlder, onLoadOlder,
+  panelOpen, panelMode, onOpenComments, onOpenReactions, onClosePanel,
+}: {
+  post: Row;
+  request: (url: string, method?: string, payload?: Payload) => Promise<Payload | null>;
+  mutate: (operation: () => Promise<unknown>, success: string, target?: View) => Promise<boolean>;
+  setData: React.Dispatch<React.SetStateAction<Record<string, unknown>>>;
+  busy: boolean;
+  canEdit: boolean;
+  canManage: boolean;
+  loadingOlder: boolean;
+  onLoadOlder: () => void;
+  panelOpen: boolean;
+  panelMode: "comments" | "reactions";
+  onOpenComments: () => void;
+  onOpenReactions: () => void;
+  onClosePanel: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [postMenuOpen, setPostMenuOpen] = useState(false);
+  const [messageExpanded, setMessageExpanded] = useState(false);
+  const [message, setMessage] = useState(String(post.message ?? ""));
+  const [imageUnavailable, setImageUnavailable] = useState(false);
+  const [imageError, setImageError] = useState("");
+  const [newComment, setNewComment] = useState("");
+  const [commentSyncError, setCommentSyncError] = useState("");
+  const [reactions, setReactions] = useState<Row[]>([]);
+  const [reactionsCount, setReactionsCount] = useState(Number(post.reactions_count ?? 0));
+  const [reactionsAfter, setReactionsAfter] = useState("");
+  const [reactionsHasMore, setReactionsHasMore] = useState(false);
+  const [loadingReactions, setLoadingReactions] = useState(false);
+  const [reactionsError, setReactionsError] = useState("");
+  const comments = (post.comments ?? []) as Row[];
+  const picture = typeof post.picture === "string" ? post.picture : "";
+  const postMessage = String(post.message ?? "");
+  const messageHasMore = postMessage.length > 280 || postMessage.split(/\r?\n/).length > 5;
+  const commentsOpen = panelOpen && panelMode === "comments";
+  const reactionsOpen = panelOpen && panelMode === "reactions";
+
+  useEffect(() => {
+    setImageUnavailable(false);
+    setImageError("");
+  }, [post.id, picture]);
+
+  async function handleImageError() {
+    setImageUnavailable(true);
+    setImageError("Le média de cette publication n’est pas accessible pour le moment.");
+    try {
+      const response = await fetch(`/api/meta/posts/${encodeURIComponent(String(post.id))}/image`, { cache: "no-store" });
+      if (!response.ok) {
+        const result = await response.json() as Payload;
+        if (typeof result.error === "string") setImageError(result.error);
+      }
+    } catch {
+      setImageError("Impossible de joindre Meta pour charger ce média.");
+    }
+  }
+
+  async function refreshPostComments(expectedCommentId?: string, incrementCount = false) {
+    try {
+      const result = await request(`/api/meta/posts/${encodeURIComponent(String(post.id))}/comments`);
+      const refreshedComments = Array.isArray(result?.comments) ? result.comments as Row[] : [];
+      setData((previous) => ({
+        ...previous,
+        meta_comments: ((previous.meta_comments ?? []) as Row[]).map((item) => item.id === post.id
+          ? {
+            ...item,
+            comments: refreshedComments,
+            comments_after: result?.comments_after ?? null,
+            comments_has_more: Boolean(result?.comments_has_more),
+            comments_count: Math.max(Number(item.comments_count ?? 0) + (incrementCount ? 1 : 0), refreshedComments.length),
+          }
+          : item),
+      }));
+      setCommentSyncError(expectedCommentId && !refreshedComments.some((comment) => comment.id === expectedCommentId)
+        ? "Meta a accepté le commentaire, mais ne le retourne pas encore dans la liste. Il peut être en cours de modération; actualisez la veille."
+        : "");
+    } catch {
+      setCommentSyncError("Commentaire envoyé, mais la mise à jour Meta n’a pas pu être relue. Actualisez la veille.");
+    }
+  }
+
+  async function loadReactions(after?: string) {
+    setLoadingReactions(true);
+    setReactionsError("");
+    try {
+      const suffix = after ? `?after=${encodeURIComponent(after)}` : "";
+      const result = await request(`/api/meta/posts/${encodeURIComponent(String(post.id))}/reactions${suffix}`);
+      const nextReactions = Array.isArray(result?.reactions) ? result.reactions as Row[] : [];
+      if (typeof result?.reactions_count === "number") setReactionsCount(result.reactions_count);
+      setReactions((current) => after
+        ? [...current, ...nextReactions].filter((reaction, index, all) =>
+          all.findIndex((item) => item.id === reaction.id) === index)
+        : nextReactions);
+      setReactionsAfter(String(result?.reactions_after ?? ""));
+      setReactionsHasMore(Boolean(result?.reactions_has_more));
+    } catch (reason) {
+      setReactionsError(reason instanceof Error ? reason.message : "Impossible de charger les personnes ayant réagi.");
+    } finally {
+      setLoadingReactions(false);
+    }
+  }
+
+  function openReactions() {
+    onOpenReactions();
+    setReactions([]);
+    setReactionsCount(Number(post.reactions_count ?? 0));
+    setReactionsAfter("");
+    setReactionsHasMore(false);
+    void loadReactions();
+  }
+
+  async function sendPostComment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const text = newComment.trim();
+    if (!text) return;
+    let createdCommentId = "";
+    const sent = await mutate(
+      async () => {
+        const result = await request(`/api/meta/posts/${encodeURIComponent(String(post.id))}/comments`, "POST", { message: text });
+        const comment = result?.comment;
+        createdCommentId = comment && typeof comment === "object" ? String((comment as Row).id ?? "") : "";
+      },
+      "Commentaire publié sur Facebook.",
+      "comments",
+    );
+    if (sent) {
+      setNewComment("");
+      await refreshPostComments(createdCommentId, true);
+    }
+  }
+
+  async function saveEdit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const updated = message.trim();
+    if (!updated) return;
+    const saved = await mutate(async () => {
+      await request(`/api/meta/posts/${encodeURIComponent(String(post.id))}`, "PATCH", { message: updated });
+      setData((previous) => ({
+        ...previous,
+        meta_comments: ((previous.meta_comments ?? []) as Row[]).map((item) =>
+          item.id === post.id ? { ...item, message: updated } : item),
+      }));
+    }, "Publication modifiée sur Facebook.", "comments");
+    if (saved) {
+      setEditing(false);
+      setPostMenuOpen(false);
+    }
+  }
+
+  async function deletePost() {
+    const deleted = await mutate(async () => {
+      await request(`/api/meta/posts/${encodeURIComponent(String(post.id))}`, "DELETE");
+      setData((previous) => ({
+        ...previous,
+        meta_comments: ((previous.meta_comments ?? []) as Row[]).filter((item) => item.id !== post.id),
+      }));
+    }, "Publication supprimée de Facebook.", "comments");
+    if (!deleted) return;
+  }
+
+  return <div className={`meta-post-layout${commentsOpen ? " meta-post-layout-open" : ""}`}>
+  <article
+    className="panel meta-post-card"
+    tabIndex={0}
+    aria-label={`Ouvrir les commentaires de la publication du ${dateLabel(post.created_time)}`}
+    onClick={(event) => {
+      if (event.target instanceof Element && event.target.closest("a, button, input, textarea, select, form, [data-meta-reactions]")) return;
+      onOpenComments();
+    }}
+    onKeyDown={(event) => {
+      if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) return;
+      event.preventDefault();
+      onOpenComments();
+    }}
+  >
+    <header className="meta-post-heading">
+      <div className="meta-page-avatar meta-page-avatar-image" aria-hidden="true"><img src="/logo.png" alt="" /></div>
+      <div className="meta-post-identity">
+        <strong>Cabalou Gabon</strong>
+        <span>{dateLabel(post.created_time)} · Public</span>
+      </div>
+      <div className="meta-post-menu">
+        <button type="button" className="meta-post-options" aria-label="Options de la publication" aria-expanded={postMenuOpen} onClick={() => setPostMenuOpen((open) => !open)}>···</button>
+        {postMenuOpen && <div className="meta-post-menu-popover">
+          {typeof post.permalink_url === "string" && post.permalink_url.startsWith("https://")
+            && <a href={post.permalink_url} target="_blank" rel="noreferrer">Voir sur Facebook ↗</a>}
+          {canEdit && !editing && <button type="button" disabled={busy} onClick={() => { setEditing(true); setPostMenuOpen(false); }}>Modifier</button>}
+          {canManage && <button type="button" className="meta-delete-action" disabled={busy} onClick={() => { setPostMenuOpen(false); void deletePost(); }}>Supprimer</button>}
+        </div>}
+      </div>
+    </header>
+    <div className="meta-post-content">
+      {editing
+        ? <form className="meta-edit-form" onSubmit={(event) => void saveEdit(event)}>
+          <textarea required maxLength={5000} value={message} onChange={(event) => setMessage(event.target.value)} />
+          <div className="meta-edit-actions">
+            <button className="button button-primary small" disabled={busy || !message.trim()}>Enregistrer</button>
+            <button type="button" className="button button-outline small" onClick={() => { setMessage(String(post.message ?? "")); setEditing(false); }}>Annuler</button>
+          </div>
+        </form>
+        : postMessage.trim() && <>
+          <p className={`meta-post-message${messageHasMore ? messageExpanded ? " meta-post-message-expanded" : " meta-post-message-collapsed" : ""}`}>{display(postMessage)}</p>
+          {messageHasMore && <button className="meta-message-toggle" type="button" aria-expanded={messageExpanded} onClick={() => setMessageExpanded((expanded) => !expanded)}>
+            {messageExpanded ? "Voir moins" : "Voir plus"}
+          </button>}
+        </>}
+    </div>
+    {picture.startsWith("https://") && !imageUnavailable
+      && <img
+        className="meta-post-image"
+        src={`/api/meta/posts/${encodeURIComponent(String(post.id))}/image`}
+        alt="Média de la publication Facebook"
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={() => void handleImageError()}
+      />}
+    {imageUnavailable && <p className="meta-image-error" role="status">{imageError}</p>}
+    <div className="meta-post-metrics" aria-label="Réactions, commentaires et partages">
+      <button className="meta-reaction-count" type="button" data-meta-reactions aria-label={`Afficher les détails des ${display(post.reactions_count)} réactions`} onClick={openReactions}>
+        <span className="meta-like-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7.5 10.5 11 4a1.8 1.8 0 0 1 3.4.9v3.6h4.1a2 2 0 0 1 2 2.3l-1.1 7a2 2 0 0 1-2 1.7H8.8a2 2 0 0 1-1.3-.5M3.5 10h3.2v9H3.5z" /></svg></span>
+        <strong>{display(post.reactions_count)}</strong>
+      </button>
+      <span aria-label={`${display(post.comments_count)} commentaires`}>
+        <svg className="meta-stat-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H6l-3 2v-6.5A7.5 7.5 0 1 1 20 11.5Z" /></svg>
+        <strong>{display(post.comments_count)}</strong>
+      </span>
+      <span aria-label={`${display(post.shares_count)} partages`}>
+        <svg className="meta-stat-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M14 5h5v5M19 5l-8 8M18 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" /></svg>
+        <strong>{display(post.shares_count)}</strong>
+      </span>
+    </div>
+  </article>
+  {panelOpen && <aside className="meta-post-comments" aria-label={commentsOpen ? "Conversation de la publication" : "Personnes ayant réagi à la publication"}>
+    <header className="meta-comments-panel-heading">
+      <div>{commentsOpen
+        ? <><h2>Commentaires</h2><p>{display(post.comments_count)} {Number(post.comments_count ?? 0) > 1 ? "commentaires" : "commentaire"} · du plus récent au plus ancien</p></>
+        : <><h2>J’aime et réactions</h2><p>{display(reactionsCount)} réaction(s) sur cette publication</p></>}
+      </div>
+      <button type="button" className="meta-close-comments" onClick={onClosePanel} aria-label={commentsOpen ? "Fermer les commentaires" : "Fermer les réactions"}>×</button>
+    </header>
+    <div className="meta-comments-scroll">
+      {commentsOpen && (!comments.length ? <p className="muted">Aucun commentaire retourné pour cette publication.</p>
+        : <div className="meta-comment-list">{comments.map((comment) =>
+          <MetaCommentCard key={String(comment.id)} comment={comment} request={request} mutate={mutate} refreshComments={refreshPostComments} setData={setData} busy={busy} canEdit={canEdit} canManage={canManage} />,
+        )}</div>)}
+      {commentsOpen && Boolean(post.comments_has_more) && <button className="button button-outline small" disabled={loadingOlder || busy} onClick={onLoadOlder}>{loadingOlder ? "Chargement…" : "Afficher les commentaires plus anciens"}</button>}
+      {reactionsOpen && (loadingReactions && !reactions.length
+        ? <p className="muted" role="status">Chargement des réactions…</p>
+        : reactionsError && !reactions.length
+          ? <p className="form-error" role="alert">{reactionsError}</p>
+          : !reactions.length
+            ? <p className="muted">{reactionsCount > 0
+              ? `Meta indique ${display(reactionsCount)} réactions, mais ne transmet pas l’identité des personnes qui ont réagi à cette publication. C’est une restriction de confidentialité de l’API, pas un problème de jeton ou de permission.`
+              : "Meta ne transmet aucun profil pour les réactions de cette publication."}</p>
+            : <div className="meta-reaction-list">
+              {reactions.map((reaction) => <div className="meta-reaction-user" key={String(reaction.id)}>
+                <span className="meta-comment-avatar" aria-hidden="true">{String(reaction.name ?? "?").trim().slice(0, 1).toLocaleUpperCase("fr")}</span>
+                <strong>{display(reaction.name)}</strong>
+                <span className="meta-reaction-user-type">{reactionLabels[String(reaction.type ?? "").toLocaleUpperCase("fr")] ?? "Réaction"}</span>
+              </div>)}
+              {reactionsError && <p className="form-error" role="alert">{reactionsError}</p>}
+              {loadingReactions && <p className="muted" role="status">Chargement…</p>}
+              {reactionsHasMore && <button className="button button-outline small" disabled={loadingReactions} onClick={() => void loadReactions(reactionsAfter)}>{loadingReactions ? "Chargement…" : "Afficher plus de réactions"}</button>}
+            </div>)}
+    </div>
+    {commentsOpen && canEdit && <form className="meta-post-comment-form" onSubmit={(event) => void sendPostComment(event)}>
+      <div className="meta-page-avatar meta-comment-composer-avatar" aria-hidden="true">C</div>
+      <textarea id={`post-comment-${String(post.id)}`} value={newComment} maxLength={2000} required placeholder="Votre commentaire public…" onChange={(event) => setNewComment(event.target.value)} />
+      <button className="button button-primary small" disabled={busy || !newComment.trim()}>Commenter</button>
+    </form>}
+    {commentsOpen && commentSyncError && <p className="meta-comment-sync-error" role="status">{commentSyncError}</p>}
+  </aside>}
+  </div>;
+}
+
+function MetaCommentCard({
+  comment, request, mutate, refreshComments, setData, busy, canEdit, canManage,
+}: {
+  comment: Row;
+  request: (url: string, method?: string, payload?: Payload) => Promise<Payload | null>;
+  mutate: (operation: () => Promise<unknown>, success: string, target?: View) => Promise<boolean>;
+  refreshComments: (expectedCommentId?: string, incrementCount?: boolean) => Promise<void>;
+  setData: React.Dispatch<React.SetStateAction<Record<string, unknown>>>;
+  busy: boolean;
+  canEdit: boolean;
+  canManage: boolean;
+}) {
+  const [message, setMessage] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [editMessage, setEditMessage] = useState(String(comment.message ?? ""));
+  const canDeleteComment = canManage || (canEdit && comment.is_page_comment === true);
+  const replies = (comment.replies ?? []) as Row[];
+
+  async function sendReply(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const reply = message.trim();
+    if (!reply) return;
+    let createdReplyId = "";
+    const sent = await mutate(
+      async () => {
+        const result = await request(`/api/meta/comments/${encodeURIComponent(String(comment.id))}/reply`, "POST", { message: reply });
+        const createdReply = result?.reply;
+        createdReplyId = createdReply && typeof createdReply === "object" ? String((createdReply as Row).id ?? "") : "";
+      },
+      "Réponse publiée sur Facebook.",
+      "comments",
+    );
+    if (sent) {
+      setMessage("");
+      await refreshComments(createdReplyId, true);
+    }
+  }
+
+  async function deleteComment() {
+    await mutate(async () => {
+      await request(`/api/meta/comments/${encodeURIComponent(String(comment.id))}`, "DELETE");
+      setData((previous) => ({
+        ...previous,
+        meta_comments: ((previous.meta_comments ?? []) as Row[]).map((post) => ({
+          ...post,
+          comments: ((post.comments ?? []) as Row[]).filter((item) => item.id !== comment.id),
+          comments_count: Math.max(0, Number(post.comments_count ?? 0) - 1),
+        })),
+      }));
+    }, "Commentaire supprimé de Facebook.", "comments");
+  }
+
+  async function saveComment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const updatedMessage = editMessage.trim();
+    if (!updatedMessage) return;
+    const saved = await mutate(async () => {
+      await request(`/api/meta/comments/${encodeURIComponent(String(comment.id))}`, "PATCH", { message: updatedMessage });
+      setData((previous) => ({
+        ...previous,
+        meta_comments: ((previous.meta_comments ?? []) as Row[]).map((post) => ({
+          ...post,
+          comments: ((post.comments ?? []) as Row[]).map((item) =>
+            item.id === comment.id ? { ...item, message: updatedMessage } : item),
+        })),
+      }));
+    }, "Commentaire modifié sur Facebook.", "comments");
+    if (saved) setEditing(false);
+  }
+
+  return <article className="meta-comment">
+    <div className="meta-comment-avatar" aria-hidden="true">{String(comment.author ?? "?").trim().slice(0, 1).toLocaleUpperCase("fr")}</div>
+    <div className="meta-comment-column">
+      <div className="meta-comment-body">
+        <div className="meta-comment-author">
+          <strong>{display(comment.author)}</strong>
+          <span className={`meta-sentiment meta-sentiment-${classifyCommentSentiment(String(comment.message ?? ""))}`}>
+            {sentimentLabels[classifyCommentSentiment(String(comment.message ?? ""))]}
+          </span>
+        </div>
+        {editing
+          ? <form className="meta-comment-edit-form" onSubmit={(event) => void saveComment(event)}>
+            <textarea aria-label="Modifier le commentaire" value={editMessage} maxLength={2000} required onChange={(event) => setEditMessage(event.target.value)} />
+            <div className="meta-edit-actions">
+              <button className="button button-primary small" disabled={busy || !editMessage.trim()}>Enregistrer</button>
+              <button className="button button-outline small" type="button" disabled={busy} onClick={() => { setEditMessage(String(comment.message ?? "")); setEditing(false); }}>Annuler</button>
+            </div>
+          </form>
+          : <p>{display(comment.message)}</p>}
+      </div>
+      <div className="meta-comment-tools">
+        <small>{dateLabel(comment.created_time)}</small>
+        {canEdit && <button className="text-button" onClick={() => document.getElementById(`reply-${String(comment.id)}`)?.focus()}>Répondre</button>}
+        {canEdit && comment.is_page_comment === true && !editing && <button className="text-button" disabled={busy} onClick={() => { setEditMessage(String(comment.message ?? "")); setEditing(true); }}>Modifier</button>}
+        {canDeleteComment && <button className="text-button meta-delete-action" disabled={busy} onClick={() => void deleteComment()}>Supprimer</button>}
+      </div>
+      {replies.length > 0 && <div className="meta-comment-thread" aria-label={`Réponses au commentaire de ${String(comment.author ?? "cet utilisateur")}`}>
+      {replies.map((reply) => <MetaCommentReply
+        key={String(reply.id)}
+        reply={reply}
+        parentComment={comment}
+        request={request}
+        mutate={mutate}
+        setData={setData}
+        busy={busy}
+        canEdit={canEdit}
+        canManage={canManage}
+      />)}
+      </div>}
+      {canEdit && <form className="meta-reply-form" onSubmit={(event) => void sendReply(event)}>
+        <textarea id={`reply-${String(comment.id)}`} value={message} maxLength={2000} required placeholder="Écrire une réponse…" onChange={(event) => setMessage(event.target.value)} />
+        <button className="button button-outline small" disabled={busy || !message.trim()}>Répondre</button>
+      </form>}
+    </div>
+  </article>;
+}
+
+function MetaCommentReply({
+  reply, parentComment, request, mutate, setData, busy, canEdit, canManage,
+}: {
+  reply: Row;
+  parentComment: Row;
+  request: (url: string, method?: string, payload?: Payload) => Promise<Payload | null>;
+  mutate: (operation: () => Promise<unknown>, success: string, target?: View) => Promise<boolean>;
+  setData: React.Dispatch<React.SetStateAction<Record<string, unknown>>>;
+  busy: boolean;
+  canEdit: boolean;
+  canManage: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [editMessage, setEditMessage] = useState(String(reply.message ?? ""));
+  const sentiment = classifyCommentSentiment(String(reply.message ?? ""));
+  const canDeleteReply = canManage || (canEdit && reply.is_page_comment === true);
+
+  async function saveReply(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const updatedMessage = editMessage.trim();
+    if (!updatedMessage) return;
+    const saved = await mutate(async () => {
+      await request(`/api/meta/comments/${encodeURIComponent(String(reply.id))}`, "PATCH", { message: updatedMessage });
+      setData((previous) => ({
+        ...previous,
+        meta_comments: ((previous.meta_comments ?? []) as Row[]).map((post) => ({
+          ...post,
+          comments: ((post.comments ?? []) as Row[]).map((comment) => ({
+            ...comment,
+            replies: ((comment.replies ?? []) as Row[]).map((item) =>
+              item.id === reply.id ? { ...item, message: updatedMessage } : item),
+          })),
+        })),
+      }));
+    }, "Réponse modifiée sur Facebook.", "comments");
+    if (saved) setEditing(false);
+  }
+
+  async function deleteReply() {
+    await mutate(async () => {
+      await request(`/api/meta/comments/${encodeURIComponent(String(reply.id))}`, "DELETE");
+      setData((previous) => ({
+        ...previous,
+        meta_comments: ((previous.meta_comments ?? []) as Row[]).map((post) => ({
+          ...post,
+          comments: ((post.comments ?? []) as Row[]).map((comment) => ({
+            ...comment,
+            replies: ((comment.replies ?? []) as Row[]).filter((item) => item.id !== reply.id),
+          })),
+          comments_count: Math.max(0, Number(post.comments_count ?? 0) - 1),
+        })),
+      }));
+    }, "Réponse supprimée de Facebook.", "comments");
+  }
+
+  return <div className="meta-comment-reply">
+    <div className="meta-comment-avatar meta-reply-avatar" aria-hidden="true">{String(reply.author ?? "?").trim().slice(0, 1).toLocaleUpperCase("fr")}</div>
+    <div className="meta-comment-column">
+      <div className="meta-comment-body">
+        <div className="meta-comment-author">
+          <strong>{display(reply.author)}</strong>
+          <span className={`meta-sentiment meta-sentiment-${sentiment}`}>{sentimentLabels[sentiment]}</span>
+        </div>
+        {editing
+          ? <form className="meta-comment-edit-form" onSubmit={(event) => void saveReply(event)}>
+            <textarea aria-label="Modifier la réponse" value={editMessage} maxLength={2000} required onChange={(event) => setEditMessage(event.target.value)} />
+            <div className="meta-edit-actions">
+              <button className="button button-primary small" disabled={busy || !editMessage.trim()}>Enregistrer</button>
+              <button className="button button-outline small" type="button" disabled={busy} onClick={() => { setEditMessage(String(reply.message ?? "")); setEditing(false); }}>Annuler</button>
+            </div>
+          </form>
+          : <p>{display(reply.message)}</p>}
+      </div>
+      <div className="meta-comment-tools">
+        <small>{dateLabel(reply.created_time)}</small>
+        <span className="meta-reply-context">Réponse à {display(parentComment.author)}</span>
+        {canEdit && reply.is_page_comment === true && !editing && <button className="text-button" disabled={busy} onClick={() => { setEditMessage(String(reply.message ?? "")); setEditing(true); }}>Modifier</button>}
+        {canDeleteReply && <button className="text-button meta-delete-action" disabled={busy} onClick={() => void deleteReply()}>Supprimer</button>}
+      </div>
+    </div>
+  </div>;
 }
 
 function Brand() {

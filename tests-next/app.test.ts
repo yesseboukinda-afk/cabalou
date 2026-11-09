@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 import { NextRequest } from "next/server";
+import { classifyCommentSentiment } from "../lib/comment-sentiment";
 
 let directory = "";
 let databasePath = "";
@@ -20,6 +21,57 @@ let route: typeof import("../app/api/[...path]/route");
 let adminId = 0;
 let managerId = 0;
 let viewerId = 0;
+
+describe("analyse locale du sentiment des commentaires", () => {
+  it("distingue les retours positifs, négatifs et neutres", () => {
+    assert.equal(classifyCommentSentiment("Merci, équipe excellente et très gentille !"), "positive");
+    assert.equal(classifyCommentSentiment("Service décevant, attente longue et problème de réservation."), "negative");
+    assert.equal(classifyCommentSentiment("Bonjour, pouvez-vous préciser les horaires ?"), "neutral");
+  });
+
+  it("inverse le sens d’un terme après une négation proche", () => {
+    assert.equal(classifyCommentSentiment("Je ne suis pas satisfait."), "negative");
+    assert.equal(classifyCommentSentiment("Pas de problème, c’était parfait."), "positive");
+  });
+});
+
+describe("édition des commentaires Meta", () => {
+  it("envoie le nouveau texte au commentaire avec le jeton de Page", async () => {
+    const originalPageId = process.env.META_PAGE_ID;
+    const originalPageToken = process.env.META_PAGE_ACCESS_TOKEN;
+    const originalFetchForTest = globalThis.fetch;
+    const graphRequests: Array<{ url: string; init?: RequestInit }> = [];
+    let commentAuthorId = "123456";
+    process.env.META_PAGE_ID = "123456";
+    process.env.META_PAGE_ACCESS_TOKEN = "test-page-token";
+    globalThis.fetch = (async (input, init) => {
+      const requestUrl = String(input);
+      graphRequests.push({ url: requestUrl, init });
+      if (requestUrl.includes("?fields=")) {
+        return Response.json({ id: "123456_789", from: { id: commentAuthorId } });
+      }
+      return Response.json({ success: true });
+    }) as typeof fetch;
+    try {
+      const { editMetaComment } = await import("../lib/integrations");
+      assert.deepEqual(await editMetaComment("123456_789", "Texte corrigé"), { id: "123456_789" });
+      assert.equal(graphRequests.length, 2);
+      assert.equal(graphRequests[0].url, "https://graph.facebook.com/v27.0/123456_789?fields=id%2Cfrom%7Bid%7D");
+      assert.equal(graphRequests[1].url, "https://graph.facebook.com/v27.0/123456_789");
+      assert.equal(graphRequests[1].init?.method, "POST");
+      assert.equal(new URLSearchParams(String(graphRequests[1].init?.body)).get("message"), "Texte corrigé");
+      commentAuthorId = "987654";
+      await assert.rejects(editMetaComment("123456_789", "Ne pas modifier"), /Seuls les commentaires publiés par la Page Cabalou/);
+      assert.equal(graphRequests.length, 3);
+    } finally {
+      globalThis.fetch = originalFetchForTest;
+      if (originalPageId === undefined) delete process.env.META_PAGE_ID;
+      else process.env.META_PAGE_ID = originalPageId;
+      if (originalPageToken === undefined) delete process.env.META_PAGE_ACCESS_TOKEN;
+      else process.env.META_PAGE_ACCESS_TOKEN = originalPageToken;
+    }
+  });
+});
 
 function cookieHeader(response: Response): string {
   const setCookie = response.headers.get("set-cookie");

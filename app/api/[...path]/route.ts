@@ -16,7 +16,12 @@ import {
   createSocial, groupMatches, listWorkflowEvents, listWorkflows, recordSeoTarget,
 } from "../../../lib/workflows";
 import { initializeDatabase } from "../../../lib/db";
-import { integrationStatus, testIntegration, generateContent } from "../../../lib/integrations";
+import {
+  integrationStatus, testIntegration, generateContent, listMetaPageComments,
+  listOlderMetaPostComments, listMetaPostComments, listMetaPostReactions, getMetaPostImage, addMetaPostComment,
+  replyToMetaComment, editMetaComment, publishMetaPagePost,
+  editMetaPagePost, deleteMetaPagePost, deleteMetaComment,
+} from "../../../lib/integrations";
 import { SupabaseAuthError } from "../../../lib/supabase-auth";
 
 const JSON_LIMIT = 1_000_000;
@@ -157,6 +162,33 @@ export async function GET(request: NextRequest) {
 
     const { user } = await requireSession(request);
     if (path === "/api/dashboard") return json(await dashboard());
+    if (parts[1] === "meta" && parts[2] === "posts" && parts[4] === "image" && parts.length === 5) {
+      const image = await getMetaPostImage(parts[3]);
+      const body = new Uint8Array(image.data.length);
+      body.set(image.data);
+      return new NextResponse(body, {
+        status: 200,
+        headers: new Headers({
+          ...corsSafeHeaders,
+          "Content-Type": image.mime,
+          "Cache-Control": "private, no-store",
+        }),
+      });
+    }
+    if (parts[1] === "meta" && parts[2] === "comments" && parts.length === 3) {
+      const after = new URL(request.url).searchParams.get("after") ?? undefined;
+      return json(await listMetaPageComments(after));
+    }
+    if (parts[1] === "meta" && parts[2] === "posts" && parts[4] === "comments" && parts.length === 5) {
+      const after = new URL(request.url).searchParams.get("after") ?? undefined;
+      return json(after
+        ? await listOlderMetaPostComments(parts[3], after)
+        : await listMetaPostComments(parts[3]));
+    }
+    if (parts[1] === "meta" && parts[2] === "posts" && parts[4] === "reactions" && parts.length === 5) {
+      const after = new URL(request.url).searchParams.get("after") ?? undefined;
+      return json(await listMetaPostReactions(parts[3], after));
+    }
     if (path === "/api/posts") return json({ posts: await listPosts() });
     if (path === "/api/listings") return json({ listings: await listListings() });
     if (path === "/api/seo") return json({ metrics: await seoMetrics(), connected: false });
@@ -251,6 +283,14 @@ export async function POST(request: NextRequest) {
       await recordAiGeneration(user.id, generated.model, String(data.channel ?? ""), generated.listingId);
       return json(responseKey("generation", generated));
     }
+    if (parts[1] === "meta" && parts[2] === "posts" && parts.length === 3) {
+      role(user, ROLES_CAN_EDIT);
+      return json(responseKey("post", await publishMetaPagePost(data.message)));
+    }
+    if (parts[1] === "meta" && parts[2] === "posts" && parts[4] === "comments" && parts.length === 5) {
+      role(user, ROLES_CAN_EDIT);
+      return json(responseKey("comment", await addMetaPostComment(parts[3], data.message)));
+    }
     if (parts[1] === "workflows") {
       role(user, ROLES_CAN_EDIT);
       let result: unknown;
@@ -286,6 +326,10 @@ export async function POST(request: NextRequest) {
         throw error;
       }
     }
+    if (parts[1] === "meta" && parts[2] === "comments" && parts[4] === "reply" && parts.length === 5) {
+      role(user, ROLES_CAN_EDIT);
+      return json(responseKey("reply", await replyToMetaComment(parts[3], data.message)));
+    }
     if (parts[1] === "posts" && parts[3] === "submit" && parts.length === 4) {
       role(user, ROLES_CAN_EDIT);
       return json(responseKey("post", await submitPost(user.id, asId(parts[2]))));
@@ -319,6 +363,14 @@ export async function PATCH(request: NextRequest) {
       role(user, ROLES_CAN_EDIT);
       return json(responseKey("post", await savePost(user.id, asId(parts[2]), data)));
     }
+    if (parts[1] === "meta" && parts[2] === "comments" && parts.length === 4) {
+      role(user, ROLES_CAN_EDIT);
+      return json(responseKey("comment", await editMetaComment(parts[3], data.message)));
+    }
+    if (parts[1] === "meta" && parts[2] === "posts" && parts.length === 4) {
+      role(user, ROLES_CAN_EDIT);
+      return json(responseKey("post", await editMetaPagePost(parts[3], data.message)));
+    }
     throw new HttpError(404, "Ressource API introuvable.");
   } catch (error) { return statusError(error, request); }
 }
@@ -327,8 +379,8 @@ export async function PUT(request: NextRequest) {
   try {
     await initializeDatabase();
     const { user } = await requireSession(request, true);
-    role(user, ROLES_CAN_EDIT);
     const parts = pathInfo(request);
+    role(user, ROLES_CAN_EDIT);
     if (parts[1] !== "posts" || parts.length !== 4 || parts[3] !== "image") {
       throw new HttpError(404, "Ressource API introuvable.");
     }
@@ -350,8 +402,16 @@ export async function DELETE(request: NextRequest) {
   try {
     await initializeDatabase();
     const { user } = await requireSession(request, true);
-    role(user, ROLES_CAN_EDIT);
     const parts = pathInfo(request);
+    if (parts[1] === "meta" && parts[2] === "posts" && parts.length === 4) {
+      role(user, ["admin", "marketing_manager"]);
+      return json(responseKey("post", await deleteMetaPagePost(parts[3])));
+    }
+    if (parts[1] === "meta" && parts[2] === "comments" && parts.length === 4) {
+      role(user, ROLES_CAN_EDIT);
+      return json(responseKey("comment", await deleteMetaComment(parts[3], ["admin", "marketing_manager"].includes(user.role))));
+    }
+    role(user, ROLES_CAN_EDIT);
     if (parts[1] !== "posts" || parts.length !== 4 || parts[3] !== "image") {
       throw new HttpError(404, "Ressource API introuvable.");
     }

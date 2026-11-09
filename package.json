@@ -4,10 +4,11 @@
   "description": "Application full-stack Next.js pour la gestion marketing locale de Cabalou.",
   "scripts": {
     "dev": "node scripts/next-local.mjs dev",
-    "build": "next build",
+    "build": "next build --webpack",
     "start": "node scripts/next-local.mjs start",
     "init-db": "tsx scripts/init-db.ts",
     "init-admin": "tsx scripts/init-admin.ts",
+    "reset-auth-password": "tsx scripts/reset-auth-password.ts",
     "typecheck": "tsc --noEmit",
     "test:next": "tsx --test tests-next/app.test.ts"
   },

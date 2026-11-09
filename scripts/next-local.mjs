@@ -23,7 +23,12 @@ if (!existsSync(nextCli)) {
   console.error("Next.js est absent. Lancez npm.cmd install.");
   process.exit(1);
 }
-const child = spawn(process.execPath, [nextCli, command, "--hostname", "127.0.0.1"], {
+const args = [nextCli, command];
+if (command === "dev") {
+  args.push("--webpack");
+}
+args.push("--hostname", "127.0.0.1");
+const child = spawn(process.execPath, args, {
   stdio: "inherit",
   env: process.env,
 });
