@@ -18,11 +18,14 @@ import {
 import { initializeDatabase } from "../../../lib/db";
 import {
   integrationStatus, testIntegration, generateContent, listMetaPageComments,
-  listOlderMetaPostComments, listMetaPostComments, listMetaPostReactions, getMetaPostImage, addMetaPostComment,
-  replyToMetaComment, editMetaComment, publishMetaPagePost,
+  listOlderMetaPostComments, listMetaPostComments, listMetaPostReactions, getMetaPostImage, getMetaPostVideo,
+  listMetaPostPhotoAttachments, getMetaPostPhotoAttachment, replaceMetaPagePostPhotos, addMetaPostComment,
+  replyToMetaComment, editMetaComment, publishMetaPagePost, publishMetaPageMedia,
+  META_PAGE_ALBUM_MAX_PHOTOS, META_PAGE_IMAGE_MAX_BYTES, META_PAGE_MEDIA_REQUEST_MAX_BYTES, META_PAGE_VIDEO_MAX_BYTES,
   editMetaPagePost, deleteMetaPagePost, deleteMetaComment,
 } from "../../../lib/integrations";
 import { SupabaseAuthError } from "../../../lib/supabase-auth";
+import { chatWithSiteAssistant } from "../../../lib/site-assistant";
 
 const JSON_LIMIT = 1_000_000;
 const IMAGE_LIMIT = 2_500_000;
@@ -31,7 +34,7 @@ const corsSafeHeaders = {
   "X-Frame-Options": "DENY",
   "Referrer-Policy": "no-referrer",
   "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
-  "Content-Security-Policy": "default-src 'none'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+  "Content-Security-Policy": "default-src 'none'; img-src 'self' blob:; media-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
   "Cache-Control": "no-store",
 };
 
@@ -162,6 +165,24 @@ export async function GET(request: NextRequest) {
 
     const { user } = await requireSession(request);
     if (path === "/api/dashboard") return json(await dashboard());
+    if (parts[1] === "meta" && parts[2] === "posts" && parts[4] === "attachments" && parts.length === 5) {
+      role(user, ["admin", "marketing_manager"]);
+      return json(await listMetaPostPhotoAttachments(parts[3]));
+    }
+    if (parts[1] === "meta" && parts[2] === "posts" && parts[4] === "attachments" && parts.length === 6) {
+      role(user, ["admin", "marketing_manager"]);
+      const image = await getMetaPostPhotoAttachment(parts[3], parts[5]);
+      const body = new Uint8Array(image.bytes.length);
+      body.set(image.bytes);
+      return new NextResponse(body, {
+        status: 200,
+        headers: new Headers({
+          ...corsSafeHeaders,
+          "Content-Type": image.type,
+          "Cache-Control": "private, no-store",
+        }),
+      });
+    }
     if (parts[1] === "meta" && parts[2] === "posts" && parts[4] === "image" && parts.length === 5) {
       const image = await getMetaPostImage(parts[3]);
       const body = new Uint8Array(image.data.length);
@@ -174,6 +195,18 @@ export async function GET(request: NextRequest) {
           "Cache-Control": "private, no-store",
         }),
       });
+    }
+    if (parts[1] === "meta" && parts[2] === "posts" && parts[4] === "video" && parts.length === 5) {
+      const video = await getMetaPostVideo(parts[3], request.headers.get("range") ?? undefined);
+      const headers = new Headers({
+        ...corsSafeHeaders,
+        "Content-Type": video.mime,
+        "Cache-Control": "private, no-store",
+      });
+      if (video.contentLength) headers.set("Content-Length", video.contentLength);
+      if (video.contentRange) headers.set("Content-Range", video.contentRange);
+      if (video.acceptRanges) headers.set("Accept-Ranges", video.acceptRanges);
+      return new NextResponse(video.body, { status: video.status, headers });
     }
     if (parts[1] === "meta" && parts[2] === "comments" && parts.length === 3) {
       const after = new URL(request.url).searchParams.get("after") ?? undefined;
@@ -258,6 +291,72 @@ export async function POST(request: NextRequest) {
       clearSessionCookie(response);
       return response;
     }
+    if (path === "/api/assistant/chat") {
+      return json(await chatWithSiteAssistant(await body(request), user.role));
+    }
+    if (parts[1] === "meta" && parts[2] === "posts" && parts[4] === "replace-media" && parts.length === 5) {
+      role(user, ["admin", "marketing_manager"]);
+      const data = await body(request);
+      return json(responseKey("post", await replaceMetaPagePostPhotos(parts[3], data.message, data.removed_attachment_ids)));
+    }
+    if (parts[1] === "meta" && parts[2] === "posts" && parts.length === 3) {
+      role(user, ROLES_CAN_EDIT);
+      if ((request.headers.get("content-type") ?? "").toLowerCase().startsWith("multipart/form-data")) {
+        const contentLength = request.headers.get("content-length");
+        if (contentLength !== null && (!/^\d+$/.test(contentLength) || Number(contentLength) > META_PAGE_MEDIA_REQUEST_MAX_BYTES)) {
+          throw new HttpError(400, "Le fichier est trop volumineux pour être envoyé.");
+        }
+        const raw = Buffer.from(await readBoundedBody(request, META_PAGE_MEDIA_REQUEST_MAX_BYTES));
+        let form: FormData;
+        try {
+          form = await new Request("http://cabalou.local", {
+            method: "POST",
+            headers: { "Content-Type": request.headers.get("content-type")! },
+            body: raw,
+          }).formData();
+        } catch {
+          throw new HttpError(400, "Le formulaire de publication média est invalide.");
+        }
+        const message = form.get("message");
+        const selectedMedia = form.getAll("media");
+        const files = selectedMedia.filter((item): item is File => item instanceof File);
+        if (typeof message !== "string" || !selectedMedia.length || files.length !== selectedMedia.length) {
+          throw new HttpError(400, "Ajoutez des photos ou une vidéo à la publication.");
+        }
+        if (files.length > META_PAGE_ALBUM_MAX_PHOTOS) {
+          throw new HttpError(400, `Vous pouvez ajouter jusqu’à ${META_PAGE_ALBUM_MAX_PHOTOS} photos dans une publication.`);
+        }
+        const hasVideo = files.some((file) => file.type === "video/mp4");
+        const allImages = files.every((file) => file.type === "image/jpeg" || file.type === "image/png");
+        if ((!allImages && !hasVideo) || (hasVideo && files.length !== 1)) {
+          throw new HttpError(400, "Ajoutez plusieurs photos JPEG/PNG, ou une seule vidéo MP4, sans mélanger les formats.");
+        }
+        const media = [];
+        for (const file of files) {
+          const isVideo = file.type === "video/mp4";
+          const sizeLimit = isVideo ? META_PAGE_VIDEO_MAX_BYTES : META_PAGE_IMAGE_MAX_BYTES;
+          if (!file.size || file.size > sizeLimit) {
+            throw new HttpError(400, isVideo ? "La vidéo MP4 ne doit pas dépasser 100 Mo." : "Chaque photo ne doit pas dépasser 10 Mo.");
+          }
+          const bytes = new Uint8Array(await file.arrayBuffer());
+          const validJpeg = file.type === "image/jpeg" && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+          const validPng = file.type === "image/png"
+            && bytes.length >= 8
+            && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+            && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a;
+          const validMp4 = isVideo && bytes.length >= 12
+            && String.fromCharCode(...bytes.slice(4, 8)) === "ftyp";
+          if (!validJpeg && !validPng && !validMp4) {
+            throw new HttpError(400, "Le contenu d’un fichier ne correspond pas à une image JPEG/PNG ou une vidéo MP4 valide.");
+          }
+          const filename = file.name.replace(/[^\w.-]/g, "_").slice(0, 120) || (validMp4 ? "video.mp4" : "photo");
+          media.push({ name: filename, type: file.type, bytes });
+        }
+        return json(responseKey("post", await publishMetaPageMedia(message, media)));
+      }
+      const data = await body(request);
+      return json(responseKey("post", await publishMetaPagePost(data.message)));
+    }
     const data = await body(request);
     if (path === "/api/users") {
       role(user, ["admin"]);
@@ -282,10 +381,6 @@ export async function POST(request: NextRequest) {
       const generated = await generateContent(data);
       await recordAiGeneration(user.id, generated.model, String(data.channel ?? ""), generated.listingId);
       return json(responseKey("generation", generated));
-    }
-    if (parts[1] === "meta" && parts[2] === "posts" && parts.length === 3) {
-      role(user, ROLES_CAN_EDIT);
-      return json(responseKey("post", await publishMetaPagePost(data.message)));
     }
     if (parts[1] === "meta" && parts[2] === "posts" && parts[4] === "comments" && parts.length === 5) {
       role(user, ROLES_CAN_EDIT);

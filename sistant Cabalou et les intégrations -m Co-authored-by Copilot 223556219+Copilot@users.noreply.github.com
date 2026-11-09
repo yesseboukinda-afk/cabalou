@@ -1,0 +1,15 @@
+ .env.example               |   8 [32m+[m[31m-[m
+ app/api/[...path]/route.ts | 109 [32m++++++[m[31m-[m
+ app/dot-spinner.tsx        |   5 [32m+[m
+ app/globals.css            | 217 [32m++++++++++++[m[31m-[m
+ app/meta-post-composer.tsx | 119 [32m++++++++[m
+ app/site-assistant.tsx     | 308 [32m+++++++++++++++++++[m
+ app/ui.tsx                 | 500 [32m+++++++++++++++++++++++++[m[31m-----[m
+ docs/integrations.md       |  22 [32m+[m[31m-[m
+ docs/workflows.md          |   6 [32m+[m[31m-[m
+ lib/ai-provider.ts         |  88 [32m++++++[m
+ lib/comment-sentiment.ts   | 132 [32m++++++[m[31m--[m
+ lib/integrations.ts        | 357 [32m++++++++++++++++++++[m[31m--[m
+ lib/site-assistant.ts      | 421 [32m+++++++++++++++++++++++++[m
+ tests-next/app.test.ts     | 742 [32m+++++++++++++++++++++++++++++++++++++++++++++[m
+ 14 files changed, 2881 insertions(+), 153 deletions(-)

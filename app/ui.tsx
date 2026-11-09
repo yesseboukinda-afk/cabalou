@@ -1,12 +1,16 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState, type ChangeEvent, type ReactNode } from "react";
-import { classifyCommentSentiment } from "../lib/comment-sentiment";
+import { FormEvent, useCallback, useEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import { classifyCommentSentiment, type CommentSentiment } from "../lib/comment-sentiment";
+import { MetaPostComposer } from "./meta-post-composer";
+import { DotSpinner } from "./dot-spinner";
+import { SiteAssistant, type SiteAssistantDraft } from "./site-assistant";
 
 type User = { id: number; username: string; display_name: string; role: string };
 type Row = Record<string, unknown>;
 type View = "dashboard" | "content" | "calendar" | "comments" | "workflows" | "seo" | "reports" | "users" | "audit" | "integrations";
 type Payload = Record<string, unknown>;
+type RequestPayload = Payload | FormData;
 
 const navigation: { id: View; label: string; icon: string }[] = [
   { id: "dashboard", label: "Vue d’ensemble", icon: "⌂" },
@@ -110,6 +114,8 @@ export function CabalouApp() {
   const [user, setUser] = useState<User | null>(null);
   const [csrf, setCsrf] = useState("");
   const [view, setView] = useState<View>("dashboard");
+  const [assistantCreateRequest, setAssistantCreateRequest] = useState<{ id: number; draft: SiteAssistantDraft | null } | null>(null);
+  const [assistantMetaPostRequest, setAssistantMetaPostRequest] = useState<{ id: number; message: string } | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [data, setData] = useState<Record<string, unknown>>({});
   const [loading, setLoading] = useState(true);
@@ -138,13 +144,14 @@ export function CabalouApp() {
     return () => window.clearTimeout(timeout);
   }, [error, notice]);
 
-  const request = useCallback(async (url: string, method = "GET", payload?: Payload, file?: File) => {
+  const request = useCallback(async (url: string, method = "GET", payload?: RequestPayload, file?: File) => {
     const headers: Record<string, string> = {};
     if (method !== "GET") headers["x-csrf-token"] = csrf;
-    if (payload) headers["Content-Type"] = "application/json";
+    const isFormData = typeof FormData !== "undefined" && payload instanceof FormData;
+    if (payload && !isFormData) headers["Content-Type"] = "application/json";
     if (file) headers["Content-Type"] = file.type;
     const send = () => fetch(url, {
-      method, headers, body: payload ? JSON.stringify(payload) : file ?? undefined,
+      method, headers, body: payload ? (isFormData ? payload : JSON.stringify(payload)) : file ?? undefined,
       cache: "no-store",
     });
     let response = await send();
@@ -164,7 +171,7 @@ export function CabalouApp() {
     setError("");
     const sources: Record<View, string[]> = {
       dashboard: ["/api/dashboard", "/api/posts"],
-      content: ["/api/posts", "/api/listings"],
+      content: ["/api/posts", "/api/listings", "/api/integrations"],
       calendar: ["/api/posts"],
       comments: [],
       workflows: ["/api/workflows"],
@@ -319,9 +326,9 @@ export function CabalouApp() {
         <div className="page-content">
           {(error || notice) && <div className={`toast visible${error ? " error" : ""}`} role={error ? "alert" : "status"}>{error || notice}</div>}
           {view === "dashboard" && <Dashboard data={data} setView={setView} />}
-          {view === "content" && <ContentView data={data} user={user} request={request} mutate={mutate} busy={busy} canEdit={canEdit} canReview={canReview} />}
+          {view === "content" && <ContentView data={data} user={user} request={request} mutate={mutate} busy={busy} canEdit={canEdit} canReview={canReview} canTestIntegrations={user.role === "admin"} onOpenIntegrations={() => setView("integrations")} assistantCreateRequest={assistantCreateRequest} />}
           {view === "calendar" && <CalendarView data={data} setView={setView} />}
-          {view === "comments" && <MetaCommentsView data={data} request={request} mutate={mutate} setData={setData} busy={busy} canEdit={canEdit} canManage={canReview} />}
+          {view === "comments" && <MetaCommentsView data={data} request={request} mutate={mutate} setData={setData} busy={busy} canEdit={canEdit} canManage={canReview} assistantMetaPostRequest={assistantMetaPostRequest} />}
           {view === "workflows" && <WorkflowsView data={data} request={request} mutate={mutate} busy={busy} canEdit={canEdit} />}
           {view === "seo" && <SeoView data={data} request={request} mutate={mutate} busy={busy} canEdit={canEdit} />}
           {view === "reports" && <ReportsView data={data} request={request} mutate={mutate} busy={busy} canEdit={canEdit} onMonthChange={setReportPeriod} />}
@@ -330,41 +337,105 @@ export function CabalouApp() {
           {view === "integrations" && <IntegrationsView data={data} request={request} mutate={mutate} busy={busy} isAdmin={user.role === "admin"} />}
         </div>
       </div>
+      <SiteAssistant
+        currentView={view}
+        availableViews={visibleNav}
+        request={request}
+        onExecuteOperation={async (operation) => {
+          const target: View = operation.path.startsWith("/api/users/")
+            ? "users"
+            : operation.path.startsWith("/api/reports")
+              ? "reports"
+              : operation.path.startsWith("/api/seo/") || operation.path.includes("/seo-targets")
+                ? "seo"
+                : operation.path.startsWith("/api/workflows/")
+                  ? "workflows"
+                  : operation.path.startsWith("/api/integrations/")
+                    ? "integrations"
+                    : operation.path.startsWith("/api/meta/")
+                      ? "comments"
+                      : "content";
+          const succeeded = await mutate(
+            () => request(operation.path, operation.method, operation.payload),
+            `${operation.summary} — terminé.`,
+            target,
+          );
+          if (succeeded) setView(target);
+          return succeeded;
+        }}
+        onNavigate={(target) => {
+          if (visibleNav.some((item) => item.id === target)) setView(target as View);
+        }}
+        onPrepareContent={(draft) => {
+          if (!canEdit) return;
+          setAssistantCreateRequest((current) => ({ id: (current?.id ?? 0) + 1, draft }));
+          setView("content");
+        }}
+        onPrepareMetaPost={(message) => {
+          if (!canEdit) return;
+          setAssistantMetaPostRequest((current) => ({ id: (current?.id ?? 0) + 1, message }));
+          setView("comments");
+        }}
+      />
     </div>
   );
 }
 
 function MetaCommentsView({
-  data, request, mutate, setData, busy, canEdit, canManage,
+  data, request, mutate, setData, busy, canEdit, canManage, assistantMetaPostRequest,
 }: {
   data: Record<string, unknown>;
-  request: (url: string, method?: string, payload?: Payload) => Promise<Payload | null>;
+  request: (url: string, method?: string, payload?: RequestPayload) => Promise<Payload | null>;
   mutate: (operation: () => Promise<unknown>, success: string, target?: View) => Promise<boolean>;
   setData: React.Dispatch<React.SetStateAction<Record<string, unknown>>>;
   busy: boolean;
   canEdit: boolean;
   canManage: boolean;
+  assistantMetaPostRequest: { id: number; message: string } | null;
 }) {
   const posts = (data.meta_comments ?? []) as Row[];
   const fetchedAt = data.meta_comments_fetched_at;
-  const loadedComments = posts.flatMap((post) => Array.isArray(post.comments)
-    ? (post.comments as Row[]).flatMap((comment) => [
+  const sentimentEntries: { comment: Row; post: Row; parentAuthor?: string; sentiment: CommentSentiment }[] = posts.flatMap((post) => (
+    Array.isArray(post.comments) ? post.comments as Row[] : []
+  ).flatMap((comment) => [
+    {
       comment,
-      ...(Array.isArray(comment.replies) ? comment.replies as Row[] : []),
-    ])
-    : []);
-  const sentimentCounts = loadedComments.reduce<Record<"positive" | "neutral" | "negative", number>>((counts, comment) => {
-    counts[classifyCommentSentiment(String(comment.message ?? ""))] += 1;
+      post,
+      sentiment: classifyCommentSentiment(String(comment.message ?? "")),
+    },
+    ...(Array.isArray(comment.replies) ? comment.replies as Row[] : []).map((reply) => ({
+      comment: reply,
+      post,
+      parentAuthor: String(comment.author ?? ""),
+      sentiment: classifyCommentSentiment(String(reply.message ?? "")),
+    })),
+  ]));
+  const sentimentCounts = sentimentEntries.reduce<Record<CommentSentiment, number>>((counts, entry) => {
+    counts[entry.sentiment] += 1;
     return counts;
   }, { positive: 0, neutral: 0, negative: 0 });
+  const [selectedSentiment, setSelectedSentiment] = useState<CommentSentiment | null>(null);
+  const sentimentDialog = useRef<HTMLDialogElement>(null);
   const [loadingComments, setLoadingComments] = useState(false);
+  const [publishingPost, setPublishingPost] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState("");
   const [loadError, setLoadError] = useState("");
-  const [newPostMessage, setNewPostMessage] = useState("");
   const [selectedPostId, setSelectedPostId] = useState("");
   const [selectedPanel, setSelectedPanel] = useState<"comments" | "reactions">("comments");
   const selectedPost = posts.find((post) => String(post.id) === selectedPostId);
   const visiblePosts = selectedPost ? [selectedPost] : posts;
+  const sentimentLabels: Record<CommentSentiment, string> = {
+    negative: "À examiner",
+    positive: "Positifs",
+    neutral: "Neutres",
+  };
+
+  useEffect(() => {
+    const dialog = sentimentDialog.current;
+    if (!dialog) return;
+    if (selectedSentiment && !dialog.open) dialog.showModal();
+    else if (!selectedSentiment && dialog.open) dialog.close();
+  }, [selectedSentiment]);
 
   const loadComments = useCallback(async (after?: string) => {
     setLoadingComments(true);
@@ -420,14 +491,22 @@ function MetaCommentsView({
     }
   }
 
-  async function publishPost(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const message = newPostMessage.trim();
-    if (!message) return;
-    const published = await mutate(() => request("/api/meta/posts", "POST", { message }), "Publication envoyée sur Facebook.", "comments");
-    if (published) {
-      setNewPostMessage("");
-      await loadComments();
+  async function publishPost(message: string, media?: File[]) {
+    setPublishingPost(true);
+    try {
+      const published = await mutate(() => {
+        if (!media?.length) return request("/api/meta/posts", "POST", { message });
+        const form = new FormData();
+        form.append("message", message);
+        for (const file of media) form.append("media", file, file.name);
+        return request("/api/meta/posts", "POST", form);
+      }, "Publication envoyée sur Facebook.", "comments");
+      if (published) {
+        await loadComments();
+      }
+      return published;
+    } finally {
+      setPublishingPost(false);
     }
   }
 
@@ -438,18 +517,57 @@ function MetaCommentsView({
       <p>Répondre publie immédiatement votre texte sur Facebook. Cette action nécessite l’autorisation Meta <code>pages_manage_engagement</code> et la tâche <code>MODERATE</code> sur la Page.</p>
       {typeof fetchedAt === "string" && <small>Dernière consultation : {new Date(fetchedAt).toLocaleString("fr-FR")}</small>}
     </section>
-    <section className="panel meta-sentiment-summary" aria-label="Analyse du sentiment des commentaires">
-      <strong>Sentiment des commentaires chargés</strong>
-      <span className="meta-sentiment meta-sentiment-negative" aria-live="polite"><strong>{sentimentCounts.negative}</strong> négatif(s) à examiner</span>
-      <span className="meta-sentiment meta-sentiment-positive"><strong>{sentimentCounts.positive}</strong> positif(s)</span>
-      <span className="meta-sentiment meta-sentiment-neutral"><strong>{sentimentCounts.neutral}</strong> neutre(s)</span>
-      <small>Analyse lexicale locale indicative; seuls les commentaires actuellement chargés sont comptés.</small>
+    <section className="panel meta-sentiment-summary" aria-label="Sentiment des commentaires">
+      <div className="meta-sentiment-heading"><strong>Sentiment des commentaires</strong></div>
+      <div className="meta-sentiment-stats">
+        {(["negative", "positive", "neutral"] as const).map((sentiment) => <button
+          key={sentiment}
+          type="button"
+          className={`meta-sentiment meta-sentiment-${sentiment}`}
+          aria-haspopup="dialog"
+          aria-label={`Afficher les commentaires ${sentimentLabels[sentiment].toLocaleLowerCase("fr")}: ${sentimentCounts[sentiment]}`}
+          onClick={() => setSelectedSentiment(sentiment)}
+        >
+          <strong aria-live="polite">{sentimentCounts[sentiment]}</strong>
+          <span>{sentimentLabels[sentiment]}</span>
+        </button>)}
+      </div>
     </section>
-    {canEdit && <form className="panel meta-post-composer" onSubmit={(event) => void publishPost(event)}>
-      <label htmlFor="meta-new-post"><strong>Nouvelle publication</strong></label>
-      <textarea id="meta-new-post" value={newPostMessage} maxLength={5000} required placeholder="Que souhaitez-vous partager sur la Page ?" onChange={(event) => setNewPostMessage(event.target.value)} />
-      <button className="button button-primary" disabled={busy || !newPostMessage.trim()}>Publier sur Facebook</button>
-    </form>}
+    <dialog
+      ref={sentimentDialog}
+      className="meta-sentiment-dialog"
+      aria-labelledby="meta-sentiment-dialog-title"
+      onClose={() => setSelectedSentiment(null)}
+      onClick={(event) => {
+        if (event.target === event.currentTarget) setSelectedSentiment(null);
+      }}
+    >
+      {selectedSentiment && <>
+        <header className="meta-sentiment-dialog-heading">
+          <div>
+            <h2 id="meta-sentiment-dialog-title">Commentaires {sentimentLabels[selectedSentiment].toLocaleLowerCase("fr")}</h2>
+            <p>{sentimentCounts[selectedSentiment]} commentaire(s) parmi ceux actuellement chargés</p>
+          </div>
+          <button type="button" className="meta-sentiment-dialog-close" aria-label="Fermer" onClick={() => setSelectedSentiment(null)}>×</button>
+        </header>
+        <div className="meta-sentiment-dialog-list">
+          {sentimentEntries.filter((entry) => entry.sentiment === selectedSentiment).length
+            ? <ul>{sentimentEntries.filter((entry) => entry.sentiment === selectedSentiment).map((entry, index) => (
+              <li key={`${String(entry.comment.id ?? "comment")}-${index}`} className="meta-sentiment-dialog-item">
+                <div className="meta-sentiment-dialog-item-heading">
+                  <strong>{display(entry.comment.author)}</strong>
+                  <time>{dateLabel(entry.comment.created_time)}</time>
+                </div>
+                {entry.parentAuthor && <small className="meta-sentiment-dialog-reply-context">Réponse à {display(entry.parentAuthor)}</small>}
+                <p>{display(entry.comment.message)}</p>
+                <small className="meta-sentiment-dialog-post-context">Publication : {display(entry.post.message || "Publication sans texte")}</small>
+              </li>
+            ))}</ul>
+            : <p className="meta-sentiment-dialog-empty">Aucun commentaire dans cette catégorie pour le moment.</p>}
+        </div>
+      </>}
+    </dialog>
+    {canEdit && <MetaPostComposer busy={busy} publishing={publishingPost} initialMessage={assistantMetaPostRequest} onPublish={publishPost} />}
     {loadError && <p className="form-error" role="alert">{loadError}</p>}
     {loadError && typeof fetchedAt === "string" && <p className="meta-stale-notice" role="status">Les cartes ci-dessous montrent la dernière lecture réussie; Meta n’a pas fourni de données actualisées. Vérifiez le jeton Meta puis actualisez.</p>}
     {typeof fetchedAt !== "string" && loadingComments
@@ -470,6 +588,7 @@ function MetaCommentsView({
             busy={busy}
             canEdit={canEdit}
             canManage={canManage}
+            onReload={() => loadComments()}
             loadingOlder={loadingOlder === post.id}
             onLoadOlder={() => void loadOlderComments(post)}
             panelOpen={Boolean(selectedPost)}
@@ -485,7 +604,7 @@ function MetaCommentsView({
 
 function MetaPostCard({
   post, request, mutate, setData, busy, canEdit, canManage, loadingOlder, onLoadOlder,
-  panelOpen, panelMode, onOpenComments, onOpenReactions, onClosePanel,
+  panelOpen, panelMode, onOpenComments, onOpenReactions, onClosePanel, onReload,
 }: {
   post: Row;
   request: (url: string, method?: string, payload?: Payload) => Promise<Payload | null>;
@@ -501,13 +620,22 @@ function MetaPostCard({
   onOpenComments: () => void;
   onOpenReactions: () => void;
   onClosePanel: () => void;
+  onReload: () => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
+  const [deletingPost, setDeletingPost] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [loadingEditMedia, setLoadingEditMedia] = useState(false);
+  const [editMediaError, setEditMediaError] = useState("");
+  const [editMedia, setEditMedia] = useState<Row[]>([]);
+  const [removedMediaIds, setRemovedMediaIds] = useState<string[]>([]);
   const [postMenuOpen, setPostMenuOpen] = useState(false);
   const [messageExpanded, setMessageExpanded] = useState(false);
   const [message, setMessage] = useState(String(post.message ?? ""));
   const [imageUnavailable, setImageUnavailable] = useState(false);
   const [imageError, setImageError] = useState("");
+  const [videoUnavailable, setVideoUnavailable] = useState(false);
+  const [videoError, setVideoError] = useState("");
   const [newComment, setNewComment] = useState("");
   const [commentSyncError, setCommentSyncError] = useState("");
   const [reactions, setReactions] = useState<Row[]>([]);
@@ -518,6 +646,9 @@ function MetaPostCard({
   const [reactionsError, setReactionsError] = useState("");
   const comments = (post.comments ?? []) as Row[];
   const picture = typeof post.picture === "string" ? post.picture : "";
+  const mediaType = String(post.media_type ?? "").toLowerCase();
+  const isVideo = mediaType.includes("video");
+  const videoId = typeof post.video_id === "string" ? post.video_id : "";
   const postMessage = String(post.message ?? "");
   const messageHasMore = postMessage.length > 280 || postMessage.split(/\r?\n/).length > 5;
   const commentsOpen = panelOpen && panelMode === "comments";
@@ -526,7 +657,9 @@ function MetaPostCard({
   useEffect(() => {
     setImageUnavailable(false);
     setImageError("");
-  }, [post.id, picture]);
+    setVideoUnavailable(false);
+    setVideoError("");
+  }, [post.id, picture, videoId]);
 
   async function handleImageError() {
     setImageUnavailable(true);
@@ -539,6 +672,23 @@ function MetaPostCard({
       }
     } catch {
       setImageError("Impossible de joindre Meta pour charger ce média.");
+    }
+  }
+
+  async function handleVideoError() {
+    setVideoUnavailable(true);
+    setVideoError("La vidéo de cette publication n’est pas accessible pour le moment.");
+    try {
+      const response = await fetch(`/api/meta/posts/${encodeURIComponent(videoId)}/video`, {
+        headers: { Range: "bytes=0-0" },
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        const result = await response.json() as Payload;
+        if (typeof result.error === "string") setVideoError(result.error);
+      }
+    } catch {
+      setVideoError("Impossible de joindre Meta pour charger cette vidéo.");
     }
   }
 
@@ -619,30 +769,76 @@ function MetaPostCard({
   async function saveEdit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const updated = message.trim();
-    if (!updated) return;
-    const saved = await mutate(async () => {
-      await request(`/api/meta/posts/${encodeURIComponent(String(post.id))}`, "PATCH", { message: updated });
-      setData((previous) => ({
-        ...previous,
-        meta_comments: ((previous.meta_comments ?? []) as Row[]).map((item) =>
-          item.id === post.id ? { ...item, message: updated } : item),
-      }));
-    }, "Publication modifiée sur Facebook.", "comments");
-    if (saved) {
-      setEditing(false);
-      setPostMenuOpen(false);
+    if (!updated && !removedMediaIds.length) return;
+    if (removedMediaIds.length && !window.confirm("Cabalou créera une nouvelle publication puis supprimera l’ancienne. Les réactions, commentaires et partages de l’ancienne ne seront pas conservés. Continuer ?")) return;
+    let replacedPost = false;
+    const replacing = removedMediaIds.length > 0;
+    setSavingEdit(true);
+    try {
+      const saved = await mutate(async () => {
+        if (replacing) {
+          await request(`/api/meta/posts/${encodeURIComponent(String(post.id))}/replace-media`, "POST", {
+            message: updated,
+            removed_attachment_ids: removedMediaIds,
+          });
+          replacedPost = true;
+        } else {
+          await request(`/api/meta/posts/${encodeURIComponent(String(post.id))}`, "PATCH", { message: updated });
+          setData((previous) => ({
+            ...previous,
+            meta_comments: ((previous.meta_comments ?? []) as Row[]).map((item) =>
+              item.id === post.id ? { ...item, message: updated } : item),
+          }));
+        }
+      }, replacing
+        ? "Nouvelle publication créée; l’ancienne a été remplacée."
+        : "Publication modifiée sur Facebook.", "comments");
+      if (saved) {
+        setEditing(false);
+        setPostMenuOpen(false);
+        setRemovedMediaIds([]);
+        setEditMedia([]);
+        if (replacedPost) await onReload();
+      }
+    } finally {
+      setSavingEdit(false);
     }
   }
 
+  async function loadEditMedia() {
+    setLoadingEditMedia(true);
+    setEditMediaError("");
+    try {
+      const result = await request(`/api/meta/posts/${encodeURIComponent(String(post.id))}/attachments`);
+      const attachments = Array.isArray(result?.attachments) ? result.attachments as Row[] : [];
+      if (attachments.length < 2) throw new Error("Meta ne retourne pas les photos de cet album.");
+      setEditMedia(attachments);
+    } catch (reason) {
+      setEditMediaError(reason instanceof Error ? reason.message : "Impossible de charger les photos de l’album.");
+    } finally {
+      setLoadingEditMedia(false);
+    }
+  }
+
+  function toggleRemovedMedia(id: string) {
+    setRemovedMediaIds((current) => current.includes(id)
+      ? current.filter((item) => item !== id)
+      : [...current, id]);
+  }
+
   async function deletePost() {
-    const deleted = await mutate(async () => {
-      await request(`/api/meta/posts/${encodeURIComponent(String(post.id))}`, "DELETE");
-      setData((previous) => ({
-        ...previous,
-        meta_comments: ((previous.meta_comments ?? []) as Row[]).filter((item) => item.id !== post.id),
-      }));
-    }, "Publication supprimée de Facebook.", "comments");
-    if (!deleted) return;
+    setDeletingPost(true);
+    try {
+      await mutate(async () => {
+        await request(`/api/meta/posts/${encodeURIComponent(String(post.id))}`, "DELETE");
+        setData((previous) => ({
+          ...previous,
+          meta_comments: ((previous.meta_comments ?? []) as Row[]).filter((item) => item.id !== post.id),
+        }));
+      }, "Publication supprimée de Facebook.", "comments");
+    } finally {
+      setDeletingPost(false);
+    }
   }
 
   return <div className={`meta-post-layout${commentsOpen ? " meta-post-layout-open" : ""}`}>
@@ -651,7 +847,7 @@ function MetaPostCard({
     tabIndex={0}
     aria-label={`Ouvrir les commentaires de la publication du ${dateLabel(post.created_time)}`}
     onClick={(event) => {
-      if (event.target instanceof Element && event.target.closest("a, button, input, textarea, select, form, [data-meta-reactions]")) return;
+      if (event.target instanceof Element && event.target.closest("a, button, input, textarea, select, form, video, audio, [data-meta-reactions]")) return;
       onOpenComments();
     }}
     onKeyDown={(event) => {
@@ -660,6 +856,10 @@ function MetaPostCard({
       onOpenComments();
     }}
   >
+    {deletingPost && <div className="meta-post-operation-overlay" role="status" aria-label="Suppression de la publication en cours">
+      <DotSpinner />
+      <strong>Suppression en cours…</strong>
+    </div>}
     <header className="meta-post-heading">
       <div className="meta-page-avatar meta-page-avatar-image" aria-hidden="true"><img src="/logo.png" alt="" /></div>
       <div className="meta-post-identity">
@@ -671,7 +871,7 @@ function MetaPostCard({
         {postMenuOpen && <div className="meta-post-menu-popover">
           {typeof post.permalink_url === "string" && post.permalink_url.startsWith("https://")
             && <a href={post.permalink_url} target="_blank" rel="noreferrer">Voir sur Facebook ↗</a>}
-          {canEdit && !editing && <button type="button" disabled={busy} onClick={() => { setEditing(true); setPostMenuOpen(false); }}>Modifier</button>}
+          {canEdit && !editing && <button type="button" disabled={busy} onClick={() => { setEditing(true); setPostMenuOpen(false); setMessage(String(post.message ?? "")); setRemovedMediaIds([]); setEditMediaError(""); }}>Modifier</button>}
           {canManage && <button type="button" className="meta-delete-action" disabled={busy} onClick={() => { setPostMenuOpen(false); void deletePost(); }}>Supprimer</button>}
         </div>}
       </div>
@@ -679,10 +879,33 @@ function MetaPostCard({
     <div className="meta-post-content">
       {editing
         ? <form className="meta-edit-form" onSubmit={(event) => void saveEdit(event)}>
-          <textarea required maxLength={5000} value={message} onChange={(event) => setMessage(event.target.value)} />
+          <textarea required={!removedMediaIds.length} maxLength={5000} value={message} onChange={(event) => setMessage(event.target.value)} />
+          {canManage && Number(post.media_items_count ?? 0) > 1 && <>
+            <button type="button" className="button button-outline small" disabled={busy || loadingEditMedia} onClick={() => void loadEditMedia()}>
+              {loadingEditMedia ? "Chargement des photos…" : editMedia.length ? "Actualiser les photos" : "Gérer les photos de l’album"}
+            </button>
+            <p className="meta-edit-media-warning">Le retrait remplacera la publication. Les réactions, commentaires et partages ne seront pas conservés.</p>
+            {editMediaError && <p className="form-error" role="alert">{editMediaError}</p>}
+            {editMedia.length > 0 && <div className="meta-post-edit-media-grid">
+              {editMedia.map((asset) => {
+                const id = String(asset.id ?? "");
+                const removing = removedMediaIds.includes(id);
+                return <div className={`meta-post-edit-media${removing ? " meta-post-edit-media-removing" : ""}`} key={id}>
+                  <img src={String(asset.image_url ?? "")} alt="Photo de la publication" />
+                  <button type="button" className="meta-post-edit-media-toggle" aria-pressed={removing} disabled={busy} onClick={() => toggleRemovedMedia(id)}>
+                    {removing ? "À retirer" : "Conserver"}
+                  </button>
+                </div>;
+              })}
+            </div>}
+            {removedMediaIds.length > 0 && <small>{removedMediaIds.length} photo(s) seront retirées; les autres seront republiées.</small>}
+          </>}
           <div className="meta-edit-actions">
-            <button className="button button-primary small" disabled={busy || !message.trim()}>Enregistrer</button>
-            <button type="button" className="button button-outline small" onClick={() => { setMessage(String(post.message ?? "")); setEditing(false); }}>Annuler</button>
+            <button className="button button-primary small" disabled={busy || (!message.trim() && !removedMediaIds.length)}>
+              {savingEdit && <DotSpinner className="dot-spinner-inline" />}
+              {savingEdit ? removedMediaIds.length ? "Remplacement en cours…" : "Enregistrement…" : removedMediaIds.length ? "Remplacer la publication" : "Enregistrer"}
+            </button>
+            <button type="button" className="button button-outline small" disabled={busy} onClick={() => { setMessage(String(post.message ?? "")); setEditing(false); setRemovedMediaIds([]); setEditMedia([]); setEditMediaError(""); }}>Annuler</button>
           </div>
         </form>
         : postMessage.trim() && <>
@@ -692,7 +915,19 @@ function MetaPostCard({
           </button>}
         </>}
     </div>
-    {picture.startsWith("https://") && !imageUnavailable
+    {isVideo && videoId && !videoUnavailable
+      && <video
+        className="meta-post-image meta-post-video"
+        src={`/api/meta/posts/${encodeURIComponent(videoId)}/video`}
+        poster={picture.startsWith("https://") ? `/api/meta/posts/${encodeURIComponent(String(post.id))}/image` : undefined}
+        controls
+        preload="metadata"
+        playsInline
+        onError={() => void handleVideoError()}
+      />}
+    {isVideo && !videoId && <p className="meta-image-error" role="status">Meta n’a pas fourni l’identifiant du flux vidéo; ouvrez la publication sur Facebook.</p>}
+    {isVideo && videoUnavailable && <p className="meta-image-error" role="status">{videoError}</p>}
+    {!isVideo && picture.startsWith("https://") && !imageUnavailable
       && <img
         className="meta-post-image"
         src={`/api/meta/posts/${encodeURIComponent(String(post.id))}/image`}
@@ -1083,18 +1318,25 @@ function Status({ value }: { value: unknown }) {
   return <span className={`status-pill status-${status}`}>{labels[status] ?? status}</span>;
 }
 
-function ContentView({ data, user, request, mutate, busy, canEdit, canReview }: {
+function ContentView({ data, user, request, mutate, busy, canEdit, canReview, canTestIntegrations, onOpenIntegrations, assistantCreateRequest }: {
   data: Record<string, unknown>; user: User; request: (url: string, method?: string, payload?: Payload, file?: File) => Promise<Payload | null>;
   mutate: (operation: () => Promise<unknown>, success: string, target?: View) => Promise<boolean>;
-  busy: boolean; canEdit: boolean; canReview: boolean;
+  busy: boolean; canEdit: boolean; canReview: boolean; canTestIntegrations: boolean; onOpenIntegrations: () => void;
+  assistantCreateRequest: { id: number; draft: SiteAssistantDraft | null } | null;
 }) {
   const posts = (data.posts ?? []) as Row[];
   const listings = (data.listings ?? []) as Row[];
+  const activeAi = ((data.integrations ?? []) as Row[]).find((item) => item.active === true && ["openai", "groq"].includes(String(item.id)));
+  const aiMissing = (activeAi?.missing_environment ?? []) as string[];
+  const aiConfigured = Boolean(activeAi && aiMissing.length === 0);
+  const aiCheck = activeAi?.last_check as Row | null;
+  const aiProviderName = activeAi?.name ? String(activeAi.name).split(" — ")[0] : "Fournisseur IA";
   const [editing, setEditing] = useState<Row | null>(null);
   const [draft, setDraft] = useState({ title: "", channel: "facebook", body: "", destination_url: "https://cabalou.net/", scheduled_date: "", listing_id: "" });
-  const [ai, setAi] = useState({ objective: "Présenter un logement", tone: "Chaleureux et professionnel", brief: "" });
+  const [ai, setAi] = useState({ objective: "Présenter un logement", tone: "Chaleureux et professionnel", audience: "", brief: "" });
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState("");
+  const [aiSuccess, setAiSuccess] = useState("");
   const [photoAspect, setPhotoAspect] = useState("original");
   const [pendingPhoto, setPendingPhoto] = useState<{ postId: number; file: File; url: string } | null>(null);
   const [photoError, setPhotoError] = useState("");
@@ -1103,9 +1345,30 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview }: 
     return () => URL.revokeObjectURL(pendingPhoto.url);
   }, [pendingPhoto]);
 
+  useEffect(() => {
+    if (!assistantCreateRequest || !canEdit) return;
+    startCreate();
+    if (assistantCreateRequest.draft) {
+      setDraft((current) => ({
+        ...current,
+        title: assistantCreateRequest.draft?.title ?? "",
+        channel: assistantCreateRequest.draft?.channel ?? "facebook",
+      }));
+      setAi({
+        objective: assistantCreateRequest.draft.objective,
+        tone: assistantCreateRequest.draft.tone,
+        audience: assistantCreateRequest.draft.audience,
+        brief: assistantCreateRequest.draft.brief,
+      });
+    }
+  }, [assistantCreateRequest?.id, canEdit]);
+
   function startCreate() {
     setEditing({ id: 0 });
     setDraft({ title: "", channel: "facebook", body: "", destination_url: "https://cabalou.net/", scheduled_date: "", listing_id: "" });
+    setAi({ objective: "Présenter un logement", tone: "Chaleureux et professionnel", audience: "", brief: "" });
+    setAiError("");
+    setAiSuccess("");
   }
   function startEdit(post: Row) {
     setEditing(post);
@@ -1121,13 +1384,15 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview }: 
     if (await mutate(() => request(editing?.id ? `/api/posts/${editing.id}` : "/api/posts", editing?.id ? "PATCH" : "POST", payload), "Contenu enregistré.")) setEditing(null);
   }
   async function generate() {
-    setAiBusy(true); setAiError("");
+    setAiBusy(true); setAiError(""); setAiSuccess("");
     try {
       const result = await request("/api/ai/generate-content", "POST", {
         ...ai, channel: draft.channel, listing_id: draft.listing_id || null, facts: [],
       });
       const generated = result?.generation as Row | undefined;
-      if (generated?.body) setDraft((current) => ({ ...current, body: String(generated.body) }));
+      if (typeof generated?.body !== "string" || !generated.body.trim()) throw new Error(`${aiProviderName} n’a pas retourné de texte exploitable.`);
+      setDraft((current) => ({ ...current, body: String(generated.body) }));
+      setAiSuccess(`Brouillon généré avec ${typeof generated.model === "string" ? generated.model : "le modèle configuré"}. Relisez-le avant de l’enregistrer.`);
     } catch (reason) { setAiError(reason instanceof Error ? reason.message : "La génération a échoué."); }
     finally { setAiBusy(false); }
   }
@@ -1158,13 +1423,53 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview }: 
         <label>Date souhaitée<input type="date" value={draft.scheduled_date} onChange={(event) => setDraft({ ...draft, scheduled_date: event.target.value })} /></label>
         <label className="span-two">Lien de destination<input type="url" required value={draft.destination_url} onChange={(event) => setDraft({ ...draft, destination_url: event.target.value })} /></label>
         <label className="span-two">Texte<textarea rows={6} maxLength={5000} value={draft.body} onChange={(event) => setDraft({ ...draft, body: event.target.value })} /></label>
-        <div className="span-two ai-box"><p className="eyebrow">ASSISTANT IA · BROUILLON UNIQUEMENT</p><div className="form-grid">
-          <label>Objectif<input value={ai.objective} onChange={(event) => setAi({ ...ai, objective: event.target.value })} maxLength={240} /></label>
-          <label>Ton<input value={ai.tone} onChange={(event) => setAi({ ...ai, tone: event.target.value })} maxLength={120} /></label>
-          <label className="span-two">Brief sans coordonnées personnelles<textarea rows={2} value={ai.brief} onChange={(event) => setAi({ ...ai, brief: event.target.value })} maxLength={1200} /></label>
-          <p className="fine-print span-two">L’IA utilise uniquement les faits du logement sélectionné. Relisez le texte et vérifiez les faits avant de l’enregistrer.</p>
+        <div className="span-two ai-box">
+          <div className="ai-box-heading">
+            <div><p className="eyebrow">ASSISTANT IA · BROUILLON UNIQUEMENT</p><h3>Préparer le texte avec {aiProviderName}</h3></div>
+            <span className={`ai-connection-status ${aiConfigured ? aiCheck?.succeeded ? "is-connected" : "is-configured" : "is-missing"}`}>
+              {aiConfigured ? aiCheck?.succeeded ? "Connexion vérifiée" : "Configuration détectée" : "Configuration requise"}
+            </span>
+          </div>
+          <p className="ai-connection-copy">
+            {!aiConfigured
+              ? `La génération est indisponible : configurez ${aiMissing.join(", ") || "AI_PROVIDER et son fournisseur"} côté serveur.`
+              : aiCheck?.succeeded
+                ? `${aiProviderName} a été vérifié le ${dateLabel(aiCheck.checked_at)}.`
+                : aiCheck?.succeeded === false
+                  ? `Le dernier test ${aiProviderName} a échoué. Vérifiez le fournisseur dans Intégrations avant de réessayer.`
+                  : `Les paramètres ${aiProviderName} sont présents. Testez la connexion dans Intégrations pour confirmer l’accès au modèle.`}
+          </p>
+          <div className="form-grid ai-options">
+          <label>Objectif<input list="ai-objectives" value={ai.objective} onChange={(event) => setAi({ ...ai, objective: event.target.value })} maxLength={240} />
+            <datalist id="ai-objectives">
+              <option value="Présenter un logement" /><option value="Mettre en avant un équipement" />
+              <option value="Promouvoir un séjour" /><option value="Encourager une demande de réservation" />
+              <option value="Partager une information pratique" /><option value="Générer de l’engagement" />
+            </datalist>
+          </label>
+          <label>Ton<input list="ai-tones" value={ai.tone} onChange={(event) => setAi({ ...ai, tone: event.target.value })} maxLength={120} />
+            <datalist id="ai-tones">
+              <option value="Chaleureux et professionnel" /><option value="Convivial et accessible" />
+              <option value="Élégant et soigné" /><option value="Inspirant et accueillant" />
+              <option value="Direct et informatif" /><option value="Concis et dynamique" />
+            </datalist>
+          </label>
+          <label className="span-two">Public visé (facultatif)<input list="ai-audiences" value={ai.audience} onChange={(event) => setAi({ ...ai, audience: event.target.value })} maxLength={160} placeholder="Ex. familles, voyageurs d’affaires" />
+            <datalist id="ai-audiences">
+              <option value="Familles" /><option value="Couples" /><option value="Voyageurs d’affaires" />
+              <option value="Voyageurs en séjour de courte durée" /><option value="Voyageurs locaux" />
+            </datalist>
+          </label>
+          <label className="span-two">Brief sans coordonnées personnelles<textarea rows={2} value={ai.brief} onChange={(event) => setAi({ ...ai, brief: event.target.value })} maxLength={1200} placeholder="Précisez le message à faire passer ou le contexte vérifié." /></label>
+          <p className="fine-print span-two">Le canal sélectionné, le brief, le public visé et les faits du logement sélectionné sont transmis à {aiProviderName}. N’incluez aucune donnée personnelle ni information confidentielle. Relisez le brouillon : l’IA ne publie jamais automatiquement.</p>
           {aiError && <p className="form-error span-two">{aiError}</p>}
-          <button type="button" className="button button-outline" onClick={() => void generate()} disabled={aiBusy || !draft.title}>{aiBusy ? "Génération…" : "Générer un brouillon IA"}</button>
+          {aiSuccess && <p className="ai-generation-success span-two" role="status">{aiSuccess}</p>}
+          <div className="ai-generation-actions span-two">
+            <button type="button" className="button button-primary" onClick={() => void generate()} disabled={aiBusy || !aiConfigured || !ai.objective.trim() || !ai.tone.trim()}>{aiBusy ? "Génération en cours…" : "Générer un brouillon"}</button>
+            {!aiConfigured && <button type="button" className="button button-outline" onClick={onOpenIntegrations}>Voir les intégrations</button>}
+            {aiConfigured && !aiCheck?.succeeded && <button type="button" className="button button-outline" onClick={onOpenIntegrations}>{canTestIntegrations ? "Vérifier la connexion" : `Voir le statut ${aiProviderName}`}</button>}
+            {aiConfigured && !aiCheck?.succeeded && !canTestIntegrations && <p className="fine-print span-two">Seul un administrateur peut lancer le test de connexion.</p>}
+          </div>
         </div></div>
         <div className="form-actions span-two"><button className="button button-primary" disabled={busy}>{busy ? "Enregistrement…" : "Enregistrer le brouillon"}</button><button type="button" className="button button-outline" onClick={() => setEditing(null)}>Annuler</button></div>
       </form>
@@ -1410,18 +1715,49 @@ function AuditView({ data }: { data: Record<string, unknown> }) {
 
 function IntegrationsView({ data, request, mutate, busy, isAdmin }: { data: Record<string, unknown>; request: (url: string, method?: string, payload?: Payload) => Promise<Payload | null>; mutate: (operation: () => Promise<unknown>, success: string, target?: View) => Promise<boolean>; busy: boolean; isAdmin: boolean }) {
   const integrations = (data.integrations ?? []) as Row[];
+  const [testingId, setTestingId] = useState("");
+
+  async function testConnection(id: string) {
+    setTestingId(id);
+    try {
+      await mutate(() => request(`/api/integrations/${id}/check`, "POST", {}), "Vérification terminée.", "integrations");
+    } finally {
+      setTestingId("");
+    }
+  }
+
   return <>
-    <PageHeading eyebrow="CONFIGURATION" title="Intégrations" description="Les identifiants restent dans votre environnement local et ne sont jamais affichés." />
+    <PageHeading eyebrow="CONFIGURATION" title="Intégrations" description="Vérifiez les connexions nécessaires aux fonctions de Cabalou. Les identifiants restent côté serveur et ne sont jamais affichés." />
+    <section className="panel integration-security-note">
+      <strong>État des connexions</strong>
+      <p>« Configuré » signifie que les paramètres sont présents, pas que le fournisseur est joignable. Lancez un test pour vérifier réellement l’accès. Les tests ne déclenchent ni publication ni génération IA.</p>
+    </section>
     <div className="integration-grid">{integrations.map((integration) => {
       const missing = (integration.missing_environment ?? []) as string[];
       const last = integration.last_check as Row | null;
+      const succeeded = last?.succeeded === true;
+      const manual = integration.status === "manual";
+      const connectionLabel = manual ? "Manuel" : missing.length ? "À configurer" : succeeded ? "Connecté" : "À vérifier";
+      const connectionClass = manual ? "is-manual" : missing.length ? "is-missing" : succeeded ? "is-connected" : "is-unchecked";
       return <article className="panel integration-card" key={String(integration.id)}>
-        <div className="integration-head"><div><h2>{display(integration.name)}</h2><p>{display(integration.description)}</p></div><Status value={integration.status} /></div>
-        <div className="integration-detail"><strong>Variables attendues</strong><p>{((integration.required_environment ?? []) as string[]).join(", ") || "Aucune — traitement manuel"}</p></div>
-        {missing.length > 0 && <p className="form-error">À configurer : {missing.join(", ")}</p>}
-        {Boolean(last) && <p className={last?.succeeded ? "integration-success" : "form-error"}>{last?.succeeded ? "Dernière vérification réussie" : "Dernière vérification échouée"} · {dateLabel(last?.checked_at)} · {display(last?.message)}</p>}
+        <div className="integration-head"><div><h2>{display(integration.name)}</h2><p>{display(integration.description)}</p>
+          {integration.active === true && <small className="integration-active-label">Fournisseur IA sélectionné</small>}
+        </div>
+          <span className={`integration-state ${connectionClass}`} role="status">{connectionLabel}</span>
+        </div>
+        <div className="integration-detail"><strong>Variables attendues</strong><div className="integration-env">
+          {((integration.required_environment ?? []) as string[]).map((name) => <code className={missing.includes(name) ? "env-missing" : ""} key={name}>{name}</code>)}
+          {!((integration.required_environment ?? []) as string[]).length && <span>Aucune — traitement manuel</span>}
+        </div></div>
+        {!manual && missing.length > 0 && <p className="form-error">À configurer sur le serveur : {missing.join(", ")}</p>}
+        {Boolean(last) && <p className={`integration-check-result${succeeded ? " is-success" : " is-error"}`}>
+          <strong>{succeeded ? "Dernier test réussi" : "Dernier test échoué"}</strong>
+          <span>{dateLabel(last?.checked_at)} · {display(last?.message)}</span>
+        </p>}
         {Boolean(integration.setup_url) && <a href={String(integration.setup_url)} target="_blank" rel="noreferrer">Documentation du fournisseur ↗</a>}
-        {isAdmin && String(integration.status) !== "manual" && <button className="button button-outline small" disabled={busy || missing.length > 0} onClick={() => void mutate(() => request(`/api/integrations/${integration.id}/check`, "POST", {}), "Vérification terminée.", "integrations")}>Tester la connexion</button>}
+        {isAdmin && !manual && <button className="button button-outline small" disabled={busy || missing.length > 0} onClick={() => void testConnection(String(integration.id))}>
+          {busy && testingId === integration.id ? "Vérification en cours…" : succeeded ? "Tester à nouveau" : "Tester la connexion"}
+        </button>}
       </article>;
     })}</div>
   </>;

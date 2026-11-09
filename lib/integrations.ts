@@ -1,9 +1,15 @@
 import nodemailer from "nodemailer";
 import { HttpError } from "./security";
 import { listListings } from "./service";
+import { aiProviderConfig, aiProviderStatus } from "./ai-provider";
 
 const TIMEOUT_MS = 12_000;
+export const META_PAGE_IMAGE_MAX_BYTES = 10_000_000;
+export const META_PAGE_VIDEO_MAX_BYTES = 100_000_000;
+export const META_PAGE_ALBUM_MAX_PHOTOS = 10;
+export const META_PAGE_MEDIA_REQUEST_MAX_BYTES = META_PAGE_VIDEO_MAX_BYTES + 1_000_000;
 const OPENAI_API = "https://api.openai.com/v1";
+const GROQ_API = "https://api.groq.com/openai/v1";
 const GOOGLE_SEARCH_CONSOLE = "https://www.googleapis.com/webmasters/v3";
 const META_VERSION = "v27.0";
 
@@ -19,11 +25,19 @@ type Integration = {
 
 const INTEGRATIONS: Integration[] = [
   {
-    id: "openai", name: "OpenAI — génération IA",
+    id: "openai", name: "OpenAI — chatbot et génération IA",
     description: "Vérifie le modèle configuré. Aucun texte Cabalou n’est transmis lors du test.",
     required_environment: ["OPENAI_API_KEY", "OPENAI_MODEL"],
     setup_url: "https://platform.openai.com/api-keys", scopes: "API key limitée au projet de production Cabalou.",
     purpose: "Aucune requête de génération n’est lancée par le test.",
+  },
+  {
+    id: "groq", name: "Groq — chatbot et génération IA",
+    description: "Fournisseur avec offre gratuite limitée et API compatible OpenAI. Les quotas dépendent du compte.",
+    required_environment: ["GROQ_API_KEY"],
+    setup_url: "https://console.groq.com/keys",
+    scopes: "Clé API Groq côté serveur; modèle par défaut openai/gpt-oss-20b.",
+    purpose: "Le test vérifie l’accès au modèle sans transmettre de contenu Cabalou.",
   },
   {
     id: "google_search_console", name: "Google Search Console",
@@ -78,11 +92,13 @@ const INTEGRATIONS: Integration[] = [
 ];
 
 export function integrationStatus() {
+  const aiStatus = aiProviderStatus();
   return INTEGRATIONS.map((integration) => {
     const missing = integration.required_environment.filter((key) => !process.env[key]?.trim());
     return {
       ...integration,
       missing_environment: missing,
+      active: integration.id === aiStatus.provider,
       status: integration.id === "facebook_groups_manual" ? "manual" : missing.length ? "not_configured" : "ready_to_test",
     };
   });
@@ -121,10 +137,10 @@ function metaFailureMessage(code: number | undefined, url: string, method?: stri
   return `Meta a refusé la requête${code ? ` (code ${code})` : ""}. Vérifiez les permissions et l’accès à la Page.`;
 }
 
-async function requestJson(url: string, init?: RequestInit, provider?: "Meta", metaContext?: MetaRequestContext): Promise<Record<string, unknown>> {
+async function requestJson(url: string, init?: RequestInit, provider?: "Meta" | "Groq" | "OpenAI", metaContext?: MetaRequestContext, timeoutMs = TIMEOUT_MS): Promise<Record<string, unknown>> {
   let response: Response;
   try {
-    response = await fetch(url, { ...init, signal: AbortSignal.timeout(TIMEOUT_MS), headers: {
+    response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs), headers: {
       Accept: "application/json", ...init?.headers,
     } });
   } catch {
@@ -146,6 +162,15 @@ async function requestJson(url: string, init?: RequestInit, provider?: "Meta", m
       const error = (payload as Record<string, unknown>).error;
       const code = Number(object(error).code);
       throw new HttpError(400, metaFailureMessage(Number.isFinite(code) ? code : undefined, url, init?.method, metaContext));
+    }
+    if (provider === "Groq" && response.status === 429) {
+      throw new HttpError(429, "La limite gratuite Groq est atteinte ou temporairement saturée. Consultez les limites du compte Groq puis réessayez après réinitialisation.");
+    }
+    if (provider === "OpenAI" && response.status === 429) {
+      const error = (payload as Record<string, unknown>).error;
+      if (object(error).code === "insufficient_quota") {
+        throw new HttpError(402, "Le projet OpenAI n’a plus de crédits API. L’abonnement ChatGPT est distinct de la facturation API.");
+      }
     }
     throw new HttpError(400, `Le fournisseur a refusé la vérification (HTTP ${response.status}). Vérifiez les droits et identifiants.`);
   }
@@ -195,7 +220,22 @@ function metaImageUrl(value: unknown): string {
   try {
     const url = new URL(candidate);
     const host = url.hostname.toLowerCase();
-    if (url.protocol !== "https:" || url.port
+    if (url.protocol !== "https:" || url.port || url.username || url.password
+      || !(host === "fbcdn.net" || host.endsWith(".fbcdn.net")
+        || host === "fbsbx.com" || host.endsWith(".fbsbx.com"))) return "";
+    return url.toString();
+  } catch {
+    return "";
+  }
+}
+
+function metaVideoUrl(value: unknown): string {
+  const candidate = string(value);
+  if (!candidate) return "";
+  try {
+    const url = new URL(candidate);
+    const host = url.hostname.toLowerCase();
+    if (url.protocol !== "https:" || url.port || url.username || url.password
       || !(host === "fbcdn.net" || host.endsWith(".fbcdn.net")
         || host === "fbsbx.com" || host.endsWith(".fbsbx.com"))) return "";
     return url.toString();
@@ -218,6 +258,55 @@ function metaPostImageUrls(post: Record<string, unknown>): string[] {
     }),
   ];
   return [...new Set(urls.filter(Boolean))];
+}
+
+type MetaPostPhotoAsset = { id: string; imageUrl: string };
+
+function metaPostPhotoAssets(post: Record<string, unknown>): MetaPostPhotoAsset[] {
+  const attachment = object(post.attachments);
+  const attachments = Array.isArray(attachment.data) ? attachment.data.map(object) : [];
+  const assets = attachments.flatMap((item) => {
+    const subattachments = object(item.subattachments);
+    const children = Array.isArray(subattachments.data) ? subattachments.data.map(object) : [];
+    const candidates = children.length ? children : [item];
+    return candidates.flatMap((candidate) => {
+      const id = string(candidate.id) || string(object(candidate.target).id);
+      const imageUrl = metaImageUrl(object(object(candidate.media).image).src);
+      return id && imageUrl ? [{ id, imageUrl }] : [];
+    });
+  });
+  return assets.filter((asset, index, all) => all.findIndex((item) => item.id === asset.id) === index);
+}
+
+async function getMetaPostAttachments(postId: string): Promise<Record<string, unknown>> {
+  if (!/^[\d_]{1,100}$/.test(postId)) throw new HttpError(400, "Référence de publication Meta invalide.");
+  const fields = "attachments{media_type,type,target{id},media{image{src}},subattachments{data{id,media_type,type,target{id},media{image{src}}}}}";
+  const url = `https://graph.facebook.com/${META_VERSION}/${encodeURIComponent(postId)}?${new URLSearchParams({ fields })}`;
+  const post = await requestJson(url, {
+    headers: { Authorization: ["Bearer", metaPageToken()].join(" ") },
+  }, "Meta", "page-read");
+  apiSuccess(post, "Meta", url, undefined, "page-read");
+  return post;
+}
+
+async function fetchMetaPhoto(imageUrl: string) {
+  const response = await fetch(imageUrl, {
+    headers: { Accept: "image/jpeg,image/png" },
+    redirect: "error",
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  if (!response.ok) throw new HttpError(502, "Meta n’a pas permis de récupérer une photo de l’album.");
+  const mime = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  if (mime !== "image/jpeg" && mime !== "image/png") {
+    throw new HttpError(400, "Une photo de cet album utilise un format que Cabalou ne peut pas republier.");
+  }
+  const bytes = await boundedImageBytes(response);
+  const validJpeg = mime === "image/jpeg" && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const validPng = mime === "image/png" && bytes.length >= 8
+    && bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47
+    && bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a;
+  if (!validJpeg && !validPng) throw new HttpError(502, "Meta a retourné une image invalide.");
+  return { bytes, type: mime, name: mime === "image/png" ? "photo.png" : "photo.jpg" };
 }
 
 async function boundedImageBytes(response: Response): Promise<Uint8Array> {
@@ -283,6 +372,75 @@ export async function getMetaPostImage(postId: string) {
   throw new HttpError(404, "Aucune image accessible pour cette publication Meta.");
 }
 
+export async function listMetaPostPhotoAttachments(postId: string) {
+  const post = await getMetaPostAttachments(postId);
+  const assets = metaPostPhotoAssets(post);
+  if (assets.length < 2) throw new HttpError(400, "La modification des médias est réservée aux albums photo.");
+  return {
+    attachments: assets.map(({ id }) => ({
+      id,
+      image_url: `/api/meta/posts/${encodeURIComponent(postId)}/attachments/${encodeURIComponent(id)}`,
+    })),
+  };
+}
+
+export async function getMetaPostPhotoAttachment(postId: string, attachmentId: string) {
+  if (!/^[\d_]{1,100}$/.test(attachmentId)) throw new HttpError(400, "Référence de photo Meta invalide.");
+  const post = await getMetaPostAttachments(postId);
+  const asset = metaPostPhotoAssets(post).find((item) => item.id === attachmentId);
+  if (!asset) throw new HttpError(404, "Cette photo n’appartient pas à l’album Meta.");
+  return await fetchMetaPhoto(asset.imageUrl);
+}
+
+export async function getMetaPostVideo(videoId: string, range?: string) {
+  if (!/^[\d_]{1,100}$/.test(videoId)) throw new HttpError(400, "Référence de vidéo Meta invalide.");
+  if (range && !/^bytes=(?:\d+-\d*|-\d+)$/.test(range)) {
+    throw new HttpError(400, "Plage de lecture vidéo invalide.");
+  }
+
+  const token = metaPageToken();
+  const graphUrl = `https://graph.facebook.com/${META_VERSION}/${encodeURIComponent(videoId)}?${new URLSearchParams({ fields: "source" })}`;
+  const video = await requestJson(graphUrl, {
+    headers: { Authorization: ["Bearer", token].join(" ") },
+  }, "Meta", "page-read");
+  apiSuccess(video, "Meta", graphUrl, undefined, "page-read");
+  let sourceUrl = metaVideoUrl(video.source);
+  if (!sourceUrl) throw new HttpError(404, "Meta ne fournit pas de flux vidéo accessible pour cette publication.");
+
+  let response: Response | null = null;
+  for (let redirects = 0; redirects <= 3; redirects += 1) {
+    response = await fetch(sourceUrl, {
+      headers: {
+        Accept: "video/mp4,application/octet-stream",
+        ...(range ? { Range: range } : {}),
+      },
+      redirect: "manual",
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (response.status < 300 || response.status >= 400) break;
+    const location = response.headers.get("location");
+    if (!location || redirects === 3) throw new HttpError(502, "Meta a retourné une redirection vidéo invalide.");
+    sourceUrl = metaVideoUrl(new URL(location, sourceUrl).toString());
+    if (!sourceUrl) throw new HttpError(502, "Meta a redirigé vers une source vidéo non autorisée.");
+  }
+
+  if (!response || (response.status !== 200 && response.status !== 206)) {
+    throw new HttpError(502, "Meta n’a pas retourné le flux vidéo.");
+  }
+  const mime = (response.headers.get("content-type") ?? "").split(";")[0].trim().toLowerCase();
+  if (mime !== "video/mp4" && mime !== "application/octet-stream") {
+    throw new HttpError(502, "Meta a retourné un format vidéo non pris en charge.");
+  }
+  return {
+    body: response.body,
+    status: response.status,
+    mime,
+    contentLength: response.headers.get("content-length"),
+    contentRange: response.headers.get("content-range"),
+    acceptRanges: response.headers.get("accept-ranges"),
+  };
+}
+
 async function checkGoogle() {
   const token = await requestJson("https://oauth2.googleapis.com/token", {
     method: "POST",
@@ -320,6 +478,18 @@ async function checkProvider(id: string): Promise<string> {
       throw new HttpError(400, "Le modèle OpenAI configuré n’est pas disponible pour ce projet.");
     }
     return `OpenAI accessible; le modèle « ${process.env.OPENAI_MODEL} » est disponible.`;
+  }
+  if (id === "groq") {
+    const config = aiProviderConfig("groq");
+    const models = await requestJson(`${GROQ_API}/models`, {
+      headers: { Authorization: `Bearer ${config.apiKey}` },
+    }, "Groq");
+    apiSuccess(models, "Groq");
+    const items = models.data;
+    if (!Array.isArray(items) || !items.some((item) => item && typeof item === "object" && (item as Record<string, unknown>).id === config.model)) {
+      throw new HttpError(400, `Le modèle Groq « ${config.model} » n’est pas disponible pour ce compte.`);
+    }
+    return `Groq accessible; le modèle « ${config.model} » est disponible.`;
   }
   if (id === "google_search_console") return checkGoogle();
   if (id === "meta_page" || id === "meta_ads") {
@@ -512,7 +682,7 @@ async function fetchMetaPostViews(postId: string) {
 export async function listMetaPageComments(after?: string) {
   const token = metaPageToken();
   const pageId = process.env.META_PAGE_ID!;
-  const fields = "id,message,created_time,permalink_url,full_picture,attachments{media{image{src}},subattachments{data{media{image{src}}}}},reactions.limit(0).summary(true),comments.limit(0).summary(true),shares";
+  const fields = "id,message,created_time,permalink_url,full_picture,attachments{id,media_type,type,target{id},media{image{src}},subattachments{data{id,media_type,type,target{id},media{image{src}}}}},reactions.limit(0).summary(true),comments.limit(0).summary(true),shares";
   const query = new URLSearchParams({ fields, limit: "15" });
   if (after) query.set("after", validMetaCursor(after));
   const url = `https://graph.facebook.com/${META_VERSION}/${encodeURIComponent(pageId)}/posts?${query}`;
@@ -532,12 +702,21 @@ export async function listMetaPageComments(after?: string) {
         fetchMetaPostComments(id),
         fetchMetaPostViews(id),
       ]);
+      const attachment = (Array.isArray(object(post.attachments).data)
+        ? object(post.attachments).data as unknown[]
+        : []).map(object)[0] ?? {};
+      const mediaType = string(attachment.media_type) || string(attachment.type);
+      const videoId = /video/i.test(mediaType) ? string(object(attachment.target).id) : "";
+      const photoAssets = metaPostPhotoAssets(post);
       return {
         id,
         message: string(post.message),
         created_time: string(post.created_time),
         permalink_url: string(post.permalink_url),
         picture: metaPostImageUrls(post)[0] ?? "",
+        media_type: mediaType,
+        video_id: videoId,
+        media_items_count: photoAssets.length,
         reactions_count: summaryCount(post.reactions),
         comments_count: summaryCount(post.comments),
         shares_count: Number(object(post.shares).count) || 0,
@@ -619,6 +798,137 @@ export async function publishMetaPagePost(value: unknown) {
   apiSuccess(result, "Meta", url, "POST", "page-write");
   if (!string(result.id)) throw new HttpError(400, "Meta n’a pas confirmé la publication.");
   return { id: string(result.id) };
+}
+
+type MetaPageMedia = { name: string; type: string; bytes: Uint8Array };
+
+async function uploadUnpublishedMetaPhoto(pageId: string, media: MetaPageMedia, token: string): Promise<string> {
+  const url = `https://graph.facebook.com/${META_VERSION}/${encodeURIComponent(pageId)}/photos`;
+  const form = new FormData();
+  const blobBuffer = new ArrayBuffer(media.bytes.byteLength);
+  new Uint8Array(blobBuffer).set(media.bytes);
+  form.append("source", new Blob([blobBuffer], { type: media.type }), media.name);
+  form.append("published", "false");
+  const result = await requestJson(url, {
+    method: "POST",
+    headers: { Authorization: ["Bearer", token].join(" ") },
+    body: form,
+  }, "Meta", "page-write", 5 * 60_000);
+  apiSuccess(result, "Meta", url, "POST", "page-write");
+  const id = string(result.id);
+  if (!id) throw new HttpError(400, "Meta n’a pas confirmé le téléversement d’une photo.");
+  return id;
+}
+
+async function publishMetaPhotoAlbum(message: string, media: MetaPageMedia[], pageId: string, token: string) {
+  if (media.length > META_PAGE_ALBUM_MAX_PHOTOS) {
+    throw new HttpError(400, `Une publication peut contenir jusqu’à ${META_PAGE_ALBUM_MAX_PHOTOS} photos.`);
+  }
+  const photoIds: string[] = [];
+  for (const photo of media) photoIds.push(await uploadUnpublishedMetaPhoto(pageId, photo, token));
+
+  const url = `https://graph.facebook.com/${META_VERSION}/${encodeURIComponent(pageId)}/feed`;
+  const form = new FormData();
+  if (message) form.append("message", message);
+  photoIds.forEach((id, index) => form.append(`attached_media[${index}]`, JSON.stringify({ media_fbid: id })));
+  const result = await requestJson(url, {
+    method: "POST",
+    headers: { Authorization: ["Bearer", token].join(" ") },
+    body: form,
+  }, "Meta", "page-write", 5 * 60_000);
+  apiSuccess(result, "Meta", url, "POST", "page-write");
+  const id = string(result.id);
+  if (!id) throw new HttpError(400, "Meta n’a pas confirmé la publication de l’album.");
+  return { id };
+}
+
+export async function replaceMetaPagePostPhotos(postId: string, value: unknown, removedIds: unknown) {
+  if (!/^[\d_]{1,100}$/.test(postId)) throw new HttpError(400, "Référence de publication Meta invalide.");
+  const message = cleanText(value ?? "", "publication", 5000, false);
+  if (!Array.isArray(removedIds) || !removedIds.length
+    || removedIds.length > META_PAGE_ALBUM_MAX_PHOTOS
+    || !removedIds.every((id) => typeof id === "string" && /^[\d_]{1,100}$/.test(id))
+    || new Set(removedIds).size !== removedIds.length) {
+    throw new HttpError(400, "Sélectionnez au moins une photo valide à retirer.");
+  }
+
+  const post = await getMetaPostAttachments(postId);
+  const assets = metaPostPhotoAssets(post);
+  if (assets.length < 2) throw new HttpError(400, "La modification des médias est réservée aux albums photo.");
+  if (!removedIds.every((id) => assets.some((asset) => asset.id === id))) {
+    throw new HttpError(400, "Une photo sélectionnée ne fait plus partie de cet album. Actualisez la veille.");
+  }
+  const remaining = assets.filter((asset) => !removedIds.includes(asset.id));
+  if (!remaining.length && !message) {
+    throw new HttpError(400, "Ajoutez un texte si vous souhaitez retirer toutes les photos.");
+  }
+
+  const media: MetaPageMedia[] = [];
+  for (const asset of remaining) {
+    const photo = await fetchMetaPhoto(asset.imageUrl);
+    media.push({ ...photo, name: `${asset.id}.${photo.type === "image/png" ? "png" : "jpg"}` });
+  }
+
+  const pageId = process.env.META_PAGE_ID!;
+  const token = metaPageToken();
+  const replacement = media.length
+    ? await publishMetaPhotoAlbum(message, media, pageId, token)
+    : await publishMetaPagePost(message);
+
+  try {
+    await deleteMetaPagePost(postId);
+  } catch {
+    throw new HttpError(502, `La nouvelle publication ${replacement.id} a été créée, mais l’ancienne n’a pas pu être supprimée. Les deux peuvent être visibles; vérifiez Facebook avant de réessayer.`);
+  }
+  return { id: replacement.id, replaced_id: postId };
+}
+
+export async function publishMetaPageMedia(value: unknown, selectedMedia: MetaPageMedia | MetaPageMedia[]) {
+  const message = cleanText(value ?? "", "publication", 5000, false);
+  const media = Array.isArray(selectedMedia) ? selectedMedia : [selectedMedia];
+  if (!media.length) throw new HttpError(400, "Ajoutez des photos ou une vidéo à la publication.");
+  if (media.length > META_PAGE_ALBUM_MAX_PHOTOS) {
+    throw new HttpError(400, `Une publication peut contenir jusqu’à ${META_PAGE_ALBUM_MAX_PHOTOS} photos.`);
+  }
+  if (media.some((item) => !item.bytes.byteLength)) throw new HttpError(400, "Un fichier média est vide.");
+  const allImages = media.every((item) => item.type === "image/jpeg" || item.type === "image/png");
+  const isVideo = media.length === 1 && media[0].type === "video/mp4";
+  if ((!allImages && !isVideo) || media.some((item) => !["image/jpeg", "image/png", "video/mp4"].includes(item.type))) {
+    throw new HttpError(400, "Utilisez plusieurs images JPEG/PNG ou une seule vidéo MP4, sans mélanger les formats.");
+  }
+  for (const item of media) {
+    const itemIsVideo = item.type === "video/mp4";
+    const sizeLimit = itemIsVideo ? META_PAGE_VIDEO_MAX_BYTES : META_PAGE_IMAGE_MAX_BYTES;
+    if (item.bytes.byteLength > sizeLimit) {
+      throw new HttpError(400, itemIsVideo ? "La vidéo MP4 ne doit pas dépasser 100 Mo." : "Chaque photo ne doit pas dépasser 10 Mo.");
+    }
+  }
+  if (!message && !allImages) throw new HttpError(400, "Ajoutez un texte ou une légende à la vidéo.");
+
+  const pageId = process.env.META_PAGE_ID!;
+  const token = metaPageToken();
+  if (allImages && media.length > 1) return publishMetaPhotoAlbum(message, media, pageId, token);
+
+  const file = media[0];
+  const fileIsImage = file.type === "image/jpeg" || file.type === "image/png";
+  const endpoint = fileIsImage ? "photos" : "videos";
+  const baseUrl = fileIsImage ? "https://graph.facebook.com" : "https://graph-video.facebook.com";
+  const url = `${baseUrl}/${META_VERSION}/${encodeURIComponent(pageId)}/${endpoint}`;
+  const form = new FormData();
+  const blobBuffer = new ArrayBuffer(file.bytes.byteLength);
+  new Uint8Array(blobBuffer).set(file.bytes);
+  form.append("source", new Blob([blobBuffer], { type: file.type }), file.name);
+  form.append(fileIsImage ? "caption" : "description", message);
+  form.append("published", "true");
+  const result = await requestJson(url, {
+    method: "POST",
+    headers: { Authorization: ["Bearer", token].join(" ") },
+    body: form,
+  }, "Meta", "page-write", 5 * 60_000);
+  apiSuccess(result, "Meta", url, "POST", "page-write");
+  const id = string(result.post_id) || string(result.id);
+  if (!id) throw new HttpError(400, "Meta n’a pas confirmé la publication du média.");
+  return { id };
 }
 
 export async function editMetaPagePost(postId: string, value: unknown) {
@@ -733,11 +1043,13 @@ function cleanText(value: unknown, label: string, limit: number, required = true
 }
 
 export async function generateContent(data: Record<string, unknown>) {
-  configured("openai");
+  const provider = aiProviderConfig();
+  configured(provider.id);
   const channel = cleanText(data.channel, "réseau", 20);
   if (!["facebook", "tiktok"].includes(channel)) throw new HttpError(400, "Le réseau doit être Facebook ou TikTok.");
   const objective = cleanText(data.objective, "objectif", 240);
   const tone = cleanText(data.tone, "ton", 120);
+  const audience = cleanText(data.audience ?? "", "public visé", 160, false);
   const brief = cleanText(data.brief ?? "", "brief", 1200, false);
   if (!Array.isArray(data.facts) || data.facts.length > 20) throw new HttpError(400, "Les faits fournis sont invalides.");
   const facts = data.facts.map((fact) => cleanText(fact, "fait vérifié", 300));
@@ -758,24 +1070,23 @@ export async function generateContent(data: Record<string, unknown>) {
   const instructions = "Tu es l’assistant de rédaction marketing de Cabalou. Rédige uniquement un brouillon en français pour le canal indiqué. Utilise seulement les faits explicitement fournis. N’invente jamais prix, disponibilité, remise, équipement, adresse précise, capacité ou caractéristique. Si les faits sont insuffisants, formule un texte prudent sans compléter et ajoute à la fin une courte ligne « À vérifier : ... ». Ne prétends pas avoir vérifié les faits. N’inclus aucune donnée personnelle. Pas de hashtags trompeurs, de garantie de réservation ni de promesse de résultat. La sortie sera revue par une personne et ne sera pas publiée automatiquement.";
   const input = [
     `Canal : ${channel}`, `Objectif : ${objective}`, `Ton : ${tone}`,
+    `Public visé : ${audience || "Non précisé."}`,
     `Brief de l’opérateur : ${brief || "Aucun brief complémentaire."}`,
     "Faits publiables vérifiés :", ...(facts.length ? facts.map((fact) => `- ${fact}`) : ["- Aucun fait fourni."]),
   ].join("\n");
-  const response = await requestJson(`${OPENAI_API}/responses`, {
-    method: "POST", headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ model: process.env.OPENAI_MODEL, instructions, input, max_output_tokens: 700 }),
-  });
-  apiSuccess(response, "OpenAI");
-  let output = string(response.output_text);
-  if (!output && Array.isArray(response.output)) {
-    output = response.output.flatMap((item) => {
-      if (!item || typeof item !== "object") return [];
-      const content = (item as Record<string, unknown>).content;
-      return Array.isArray(content) ? content.filter((part) => part && typeof part === "object"
-        && (part as Record<string, unknown>).type === "output_text")
-        .map((part) => string((part as Record<string, unknown>).text)) : [];
-    }).join("\n");
-  }
-  if (!output.trim() || output.length > 5000) throw new HttpError(400, "OpenAI n’a pas retourné de brouillon exploitable.");
-  return { body: output.trim(), model: process.env.OPENAI_MODEL!, listingId };
+  const response = await requestJson(`${provider.apiUrl}/chat/completions`, {
+    method: "POST", headers: { Authorization: `Bearer ${provider.apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: provider.model,
+      messages: [{ role: "system", content: instructions }, { role: "user", content: input }],
+      max_tokens: 700,
+    }),
+  }, provider.id === "groq" ? "Groq" : "OpenAI");
+  apiSuccess(response, provider.name);
+  const choices = Array.isArray(response.choices) ? response.choices : [];
+  const firstChoice = choices[0] && typeof choices[0] === "object" ? choices[0] as Record<string, unknown> : {};
+  const message = firstChoice.message && typeof firstChoice.message === "object" ? firstChoice.message as Record<string, unknown> : {};
+  const output = string(message.content);
+  if (!output.trim() || output.length > 5000) throw new HttpError(400, `${provider.name} n’a pas retourné de brouillon exploitable.`);
+  return { body: output.trim(), model: provider.model, listingId };
 }
