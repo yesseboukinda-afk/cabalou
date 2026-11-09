@@ -147,6 +147,73 @@ describe("génération de contenu IA", () => {
 });
 
 describe("assistant de navigation Cabalou", () => {
+  it("répond aux questions générales sans proposer une action dans l’application", async () => {
+    const originalProvider = process.env.AI_PROVIDER;
+    const originalApiKey = process.env.OPENAI_API_KEY;
+    const originalModel = process.env.OPENAI_MODEL;
+    const originalFetchForTest = globalThis.fetch;
+    let requestBody: Record<string, unknown> | undefined;
+    process.env.AI_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    process.env.OPENAI_MODEL = "gpt-test-model";
+    globalThis.fetch = (async (_input, init) => {
+      requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return Response.json({
+        choices: [{ message: { content: JSON.stringify({
+          reply: "La capitale du Japon est Tokyo.",
+          action: { type: "none", view: null, content: null, meta_post: null, operation: null },
+        }) } }],
+      });
+    }) as typeof fetch;
+    try {
+      const { chatWithSiteAssistant } = await import("../lib/site-assistant");
+      const result = await chatWithSiteAssistant({ message: "Quelle est la capitale du Japon ?" }, "admin");
+      assert.equal(result.reply, "La capitale du Japon est Tokyo.");
+      assert.equal(result.action.type, "none");
+      const messages = requestBody?.messages as Array<{ role: string; content: string }>;
+      assert.match(messages[0].content, /toute sorte de questions générales/u);
+      assert.match(messages[0].content, /ne demande aucune action.*action\.type=none/u);
+    } finally {
+      globalThis.fetch = originalFetchForTest;
+      if (originalProvider === undefined) delete process.env.AI_PROVIDER;
+      else process.env.AI_PROVIDER = originalProvider;
+      if (originalApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = originalApiKey;
+      if (originalModel === undefined) delete process.env.OPENAI_MODEL;
+      else process.env.OPENAI_MODEL = originalModel;
+    }
+  });
+
+  it("répond à une demande de génération d’image sans rejeter une action inconnue non exécutable", async () => {
+    const originalProvider = process.env.AI_PROVIDER;
+    const originalApiKey = process.env.OPENAI_API_KEY;
+    const originalModel = process.env.OPENAI_MODEL;
+    const originalFetchForTest = globalThis.fetch;
+    process.env.AI_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    process.env.OPENAI_MODEL = "gpt-test-model";
+    globalThis.fetch = (async () => Response.json({
+      choices: [{ message: { content: JSON.stringify({
+        reply: "Je ne peux pas créer directement une image ici, mais je peux vous aider à rédiger un prompt.",
+        action: { type: "generate_image", view: null, content: null, meta_post: null, operation: null },
+      }) } }],
+    })) as typeof fetch;
+    try {
+      const { chatWithSiteAssistant } = await import("../lib/site-assistant");
+      const result = await chatWithSiteAssistant({ message: "Peux-tu générer une image ?" }, "admin");
+      assert.match(result.reply, /ne peux pas créer directement une image/u);
+      assert.equal(result.action.type, "none");
+    } finally {
+      globalThis.fetch = originalFetchForTest;
+      if (originalProvider === undefined) delete process.env.AI_PROVIDER;
+      else process.env.AI_PROVIDER = originalProvider;
+      if (originalApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = originalApiKey;
+      if (originalModel === undefined) delete process.env.OPENAI_MODEL;
+      else process.env.OPENAI_MODEL = originalModel;
+    }
+  });
+
   it("bascule automatiquement vers Groq si OpenAI est limité ou non configuré", async () => {
     const originalProvider = process.env.AI_PROVIDER;
     const originalOpenAiKey = process.env.OPENAI_API_KEY;

@@ -204,14 +204,14 @@ export function SiteAssistant({
       <header className="site-assistant-header">
         <div className="site-assistant-brand"><span className="site-assistant-avatar" aria-hidden="true">✦</span><div>
           <strong id="site-assistant-title">Assistant Cabalou</strong>
-          <small>Navigation et aide sur le site</small>
+          <small>Questions générales et aide sur le site</small>
         </div></div>
         <button type="button" className="site-assistant-close" aria-label="Fermer l’assistant" onClick={() => setOpen(false)}>×</button>
       </header>
       <div className="site-assistant-messages" ref={listRef} aria-live="polite">
         {!messages.length && <div className="site-assistant-welcome">
           <strong>Bonjour ! Comment puis-je vous aider ?</strong>
-          <p>Je peux vous orienter dans Cabalou, préparer un brouillon et proposer des opérations à effectuer après votre confirmation.</p>
+          <p>Posez-moi vos questions, générales ou sur Cabalou. Je peux aussi vous orienter, préparer un brouillon et proposer des opérations après votre confirmation.</p>
           <div className="site-assistant-suggestions">
             {["Ouvre les contenus", "Je veux préparer un brouillon", "Où tester OpenAI ?"].map((suggestion) => <button key={suggestion} type="button" onClick={() => setInput(suggestion)}>{suggestion}</button>)}
           </div>

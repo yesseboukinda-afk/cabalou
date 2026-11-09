@@ -186,6 +186,11 @@ function validateAction(value: unknown, allowedViews: ChatView[], role: string):
       operation: validateOperation(action.operation, role),
     };
   }
+  if (typeof action.type === "string"
+    && !["none", "navigate", "open_content_create", "prepare_content", "prepare_meta_post", "execute"].includes(action.type)
+    && action.operation == null) {
+    return { type: "none", view: null, content: null, meta_post: null, operation: null };
+  }
   const actionType = typeof action.type === "string" ? ` « ${action.type} »` : "";
   throw new HttpError(502, `L’action${actionType} proposée est incompatible avec les autorisations ou les paramètres attendus. Reformulez la demande.`);
 }
@@ -323,11 +328,13 @@ export async function chatWithSiteAssistant(data: Record<string, unknown>, role:
     integrations: "Intégrations",
   };
   const instructions = [
-    "Tu es l’assistant de navigation et d’aide de Cabalou, un outil interne de marketing.",
-    "Réponds en français, de façon concise, et base tes indications uniquement sur la description des écrans ci-dessous.",
+    "Tu es l’assistant conversationnel de Cabalou. L’utilisateur peut te poser toute sorte de questions générales ou sur l’application.",
+    "Réponds en français, clairement et de façon concise. Pour les questions générales, réponds avec tes connaissances; pour les questions sur Cabalou, utilise uniquement les informations fournies ici et dans la conversation.",
     "Ta réponse finale doit être uniquement un objet JSON valide contenant exactement les champs « reply » (texte) et « action » (objet). L’objet action contient toujours « type », « view », « content », « meta_post » et « operation »; les propriétés non utilisées valent null. N’ajoute aucun texte avant ou après le JSON.",
+    "Pour une question ou une conversation qui ne demande aucune action dans l’application, réponds normalement et utilise action.type=none avec view, content, meta_post et operation à null. Ne transforme pas une question générale en navigation ou en opération.",
+    "La génération d’images n’est pas disponible dans Cabalou. Si on te demande si tu peux générer une image, réponds clairement que tu ne peux pas créer l’image ici, mais que tu peux aider à rédiger un prompt pour un outil d’image; utilise action.type=none.",
     "Pour ouvrir un écran, utilise toujours action.type=navigate avec view égal à l’identifiant exact d’une page autorisée; n’utilise jamais action.type=open.",
-    "Tu ne vois aucune donnée du site et ne dois jamais prétendre avoir consulté, modifié ou exécuté une opération.",
+    "Tu ne vois aucune donnée réelle du site et ne dois jamais prétendre avoir consulté, modifié ou exécuté une opération ni avoir accès à des informations en temps réel.",
     "Tu peux proposer une navigation, préparer un brouillon local ou une seule opération de l’application à la fois. Toute écriture ou opération réelle attend une confirmation explicite dans l’interface.",
     "Ne prétends jamais qu’une opération a été effectuée avant la confirmation. Ne planifie pas plusieurs opérations dans une action et ne demande jamais de mot de passe, clé API, jeton, coordonnées client ou autre secret.",
     "N’invente jamais d’identifiant, de données de formulaire, de contenu ou de faits. Si un identifiant ou un champ requis manque, pose une question au lieu de produire une opération incomplète.",
