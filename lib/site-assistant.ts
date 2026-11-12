@@ -1,5 +1,5 @@
 import { HttpError } from "./security";
-import { aiProviderConfig, aiProviderError, selectedAiProvider, type AiProviderConfig } from "./ai-provider";
+import { aiProviderCascade, aiProviderError, type AiProviderConfig } from "./ai-provider";
 const CHAT_VIEWS = ["dashboard", "content", "calendar", "comments", "workflows", "seo", "reports", "users", "audit", "integrations"] as const;
 type ChatView = typeof CHAT_VIEWS[number];
 type ChatRole = "user" | "assistant";
@@ -137,13 +137,13 @@ function validateAction(value: unknown, allowedViews: ChatView[], role: string):
       const content = action.content as Record<string, unknown>;
       const fields = ["title", "objective", "tone", "audience", "brief"];
       if (fields.some((field) => typeof content[field] !== "string" || (content[field] as string).length > (field === "brief" ? 1200 : 240))) {
-        throw new HttpError(502, "L’assistant a proposé un brouillon invalide. Reformulez votre demande.");
+        return { type: "none", view: null, content: null, meta_post: null, operation: null };
       }
       if (fields.some((field) => containsPersonalContact(content[field] as string))) {
-        throw new HttpError(502, "Le brouillon proposé semble contenir une coordonnée ou un secret. Retirez-le avant de continuer.");
+        return { type: "none", view: null, content: null, meta_post: null, operation: null };
       }
       if (content.channel !== "facebook" && content.channel !== "tiktok") {
-        throw new HttpError(502, "L’assistant a proposé un réseau invalide. Reformulez votre demande.");
+        return { type: "none", view: null, content: null, meta_post: null, operation: null };
       }
       return {
         type: "prepare_content",
@@ -160,6 +160,9 @@ function validateAction(value: unknown, allowedViews: ChatView[], role: string):
         operation: null,
       };
     }
+  }
+  if (action.type === "prepare_content") {
+    return { type: "none", view: null, content: null, meta_post: null, operation: null };
   }
   if (action.type === "prepare_meta_post" && action.view === "comments" && allowedViews.includes("comments")
     && action.content === null && action.operation === null && action.meta_post
@@ -239,10 +242,11 @@ async function requestAssistantReply(
       body: JSON.stringify({
         model: provider.model,
         messages,
-        response_format: provider.id === "groq"
-          ? { type: "json_object" }
-          : { type: "json_schema", json_schema: { name: "cabalou_site_assistant", strict: true, schema } },
-        max_tokens: 700,
+        ...(provider.id === "deepseek" ? { thinking: { type: "disabled" } } : {}),
+        response_format: provider.id === "openai"
+          ? { type: "json_schema", json_schema: { name: "cabalou_site_assistant", strict: true, schema } }
+          : { type: "json_object" },
+        max_tokens: 1000,
       }),
       signal: AbortSignal.timeout(20_000),
     });
@@ -253,8 +257,9 @@ async function requestAssistantReply(
     );
   }
   if (!response.ok) {
-    const canFallback = response.status === 401 || response.status === 402 || response.status === 403
-      || response.status === 404 || response.status === 408 || response.status === 429 || response.status >= 500;
+    const canFallback = response.status === 400 || response.status === 401 || response.status === 402
+      || response.status === 403 || response.status === 404 || response.status === 408
+      || response.status === 413 || response.status === 429 || response.status >= 500;
     throw new AssistantProviderFailure(await aiProviderError(response, provider.id), canFallback);
   }
 
@@ -285,14 +290,8 @@ async function requestAssistantReply(
 }
 
 export async function chatWithSiteAssistant(data: Record<string, unknown>, role: string) {
-  const selectedProvider = selectedAiProvider();
-  const groqConfigured = Boolean(process.env.GROQ_API_KEY?.trim());
-  const openAiConfigured = Boolean(process.env.OPENAI_API_KEY?.trim() && process.env.OPENAI_MODEL?.trim());
-  let provider = selectedProvider === "openai" && !openAiConfigured && groqConfigured
-    ? aiProviderConfig("groq")
-    : aiProviderConfig(selectedProvider);
-  const fallbackProvider = provider.id === "openai" && groqConfigured ? aiProviderConfig("groq") : null;
-  let fallbackUsed = provider.id === "groq" && selectedProvider === "openai";
+  const providers = aiProviderCascade();
+  let provider = providers[0];
   if (typeof data.message !== "string" || !data.message.trim() || data.message.length > 2000) {
     throw new HttpError(400, "Le message doit contenir au maximum 2 000 caractères.");
   }
@@ -329,7 +328,9 @@ export async function chatWithSiteAssistant(data: Record<string, unknown>, role:
   };
   const instructions = [
     "Tu es l’assistant conversationnel de Cabalou. L’utilisateur peut te poser toute sorte de questions générales ou sur l’application.",
-    "Réponds en français, clairement et de façon concise. Pour les questions générales, réponds avec tes connaissances; pour les questions sur Cabalou, utilise uniquement les informations fournies ici et dans la conversation.",
+    "Adopte le ton d’un interlocuteur humain, attentif et naturel, sans familiarité forcée ni formules répétitives. Réponds dans la langue de l’utilisateur, en français par défaut. Adapte le ton, la forme et la longueur à sa demande : une réponse directe pour une question simple, une explication structurée pour une demande complexe, et le format demandé lorsqu’il est pertinent.",
+    "Pour répondre, examine soigneusement la demande, le contexte et les échanges précédents; vérifie la cohérence de ta réponse et distingue les faits des hypothèses. Pour les problèmes complexes, donne la conclusion et les raisons utiles sans exposer de raisonnement interne détaillé. Si une demande est ambiguë ou manque d’information essentielle, pose une question de clarification précise au lieu de deviner. Si tu n’es pas sûr, dis-le clairement.",
+    "Pour les questions générales, réponds avec tes connaissances et aide sur des sujets variés (explications, conseils, idées, rédaction, traduction ou analyse). Pour les questions sur Cabalou, utilise uniquement les informations fournies ici et dans la conversation.",
     "Ta réponse finale doit être uniquement un objet JSON valide contenant exactement les champs « reply » (texte) et « action » (objet). L’objet action contient toujours « type », « view », « content », « meta_post » et « operation »; les propriétés non utilisées valent null. N’ajoute aucun texte avant ou après le JSON.",
     "Pour une question ou une conversation qui ne demande aucune action dans l’application, réponds normalement et utilise action.type=none avec view, content, meta_post et operation à null. Ne transforme pas une question générale en navigation ou en opération.",
     "La génération d’images n’est pas disponible dans Cabalou. Si on te demande si tu peux générer une image, réponds clairement que tu ne peux pas créer l’image ici, mais que tu peux aider à rédiger un prompt pour un outil d’image; utilise action.type=none.",
@@ -376,12 +377,12 @@ export async function chatWithSiteAssistant(data: Record<string, unknown>, role:
               brief: { type: "string" },
               channel: { type: "string", enum: ["facebook", "tiktok"] },
             },
-            meta_post: {
-              type: ["object", "null"],
-              additionalProperties: false,
-              required: ["message"],
-              properties: { message: { type: "string" } },
-            },
+          },
+          meta_post: {
+            type: ["object", "null"],
+            additionalProperties: false,
+            required: ["message"],
+            properties: { message: { type: "string" } },
           },
           operation: {
             type: ["object", "null"],
@@ -400,29 +401,22 @@ export async function chatWithSiteAssistant(data: Record<string, unknown>, role:
   };
 
   const messages = [{ role: "system" as const, content: instructions }, ...history, { role: "user" as const, content: data.message.trim() }];
-  let parsed: { reply: string; action: unknown };
-  try {
-    parsed = await requestAssistantReply(provider, messages, schema);
-  } catch (error) {
-    if (!(error instanceof AssistantProviderFailure)) throw error;
-    if (!fallbackProvider || !error.canFallback) throw error.publicError;
+  let parsed: { reply: string; action: unknown } | undefined;
+  const unavailableMessage = "Je ne peux pas répondre pour le moment. Réessaie dans un instant.";
+  for (const [index, candidate] of providers.entries()) {
+    provider = candidate;
     try {
-      parsed = await requestAssistantReply(fallbackProvider, messages, schema);
-      provider = fallbackProvider;
-      fallbackUsed = true;
-    } catch (fallbackError) {
-      if (fallbackError instanceof AssistantProviderFailure) {
-        throw new HttpError(
-          fallbackError.publicError.status,
-          `OpenAI est indisponible et Groq n’a pas pu répondre. ${fallbackError.publicError.message}`,
-        );
-      }
-      throw fallbackError;
+      parsed = await requestAssistantReply(provider, messages, schema);
+      break;
+    } catch (error) {
+      if (!(error instanceof AssistantProviderFailure)) throw error;
+      if (!error.canFallback || index === providers.length - 1) throw new HttpError(503, unavailableMessage);
     }
   }
+  if (!parsed) throw new HttpError(503, unavailableMessage);
   const reply = parsed.reply.trim();
   if (!reply || reply.length > 2500) throw new HttpError(502, "L’assistant a retourné une réponse trop longue ou vide.");
   if (containsPersonalContact(reply)) throw new HttpError(502, "La réponse contient une coordonnée ou un secret. Reformulez votre demande.");
   const action = validateAction(parsed.action, allowedViews, role);
-  return { reply, action, provider: provider.id, fallback_used: fallbackUsed };
+  return { reply, action };
 }

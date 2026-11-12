@@ -33,13 +33,25 @@ Documentation : [clés API OpenAI](https://platform.openai.com/api-keys), [API C
 
 | Variable | Description |
 |---|---|
-| `AI_PROVIDER` | Mettre `groq` pour utiliser Groq pour le chatbot et les brouillons |
+| `AI_PROVIDER` | Mettre `groq` pour utiliser Groq en premier pour le chatbot et les brouillons |
 | `GROQ_API_KEY` | Clé serveur créée dans GroqCloud |
 | `GROQ_MODEL` | Modèle Groq; par défaut `openai/gpt-oss-20b` |
 
-Créez une clé sur [GroqCloud](https://console.groq.com/keys), configurez ces variables sur le serveur et redémarrez Cabalou. Le test vérifie l’accès au modèle via `GET /openai/v1/models`; il ne transmet pas de conversation. Le chatbot et la génération utilisent ensuite `POST /openai/v1/chat/completions`. Groq propose un plan Free à 0 $, soumis à des quotas par modèle et par organisation, qui peuvent changer et être atteints; aucune marge fixe ou illimitée de conversations n’est garantie. Vérifiez vos limites actives dans [GroqCloud](https://console.groq.com/settings/limits). En cas de limite atteinte, Cabalou l’indique et il faut attendre le renouvellement du quota ou choisir un plan payant. Groq indique que les requêtes d’inférence ne sont pas conservées par défaut, mais peut conserver temporairement les entrées/sorties jusqu’à 30 jours pour la fiabilité et l’anti-abus; vérifiez les [contrôles de données](https://console.groq.com/settings/data-controls) avant utilisation. Ne saisissez pas de données personnelles ou confidentielles.
+Créez une clé sur [GroqCloud](https://console.groq.com/keys), configurez ces variables sur le serveur et redémarrez Cabalou. Le test vérifie l’accès au modèle via `GET /openai/v1/models`; il ne transmet pas de conversation. Le chatbot et la génération utilisent ensuite `POST /openai/v1/chat/completions`. Groq propose un plan Free à 0 $, soumis à des quotas par modèle et par organisation, qui peuvent changer et être atteints; aucune marge fixe ou illimitée de conversations n’est garantie. Vérifiez vos limites actives dans [GroqCloud](https://console.groq.com/settings/limits). Si Groq est limité, Cabalou essaie les fournisseurs suivants configurés. Groq indique que les requêtes d’inférence ne sont pas conservées par défaut, mais peut conserver temporairement les entrées/sorties jusqu’à 30 jours pour la fiabilité et l’anti-abus; vérifiez les [contrôles de données](https://console.groq.com/settings/data-controls) avant utilisation. Ne saisissez pas de données personnelles ou confidentielles.
 
 Documentation : [plan gratuit](https://console.groq.com/settings/billing/plans), [modèles et limites](https://console.groq.com/docs/rate-limits), [utilisation des données](https://console.groq.com/docs/your-data), [API compatible OpenAI](https://console.groq.com/docs/openai).
+
+### DeepSeek — clés de secours du chatbot
+
+| Variable | Description |
+|---|---|
+| `cabalou_deepseek_api` | Première clé DeepSeek essayée |
+| `maboundza_deepseek_api` | Seconde clé, essayée si la première échoue |
+| `DEEPSEEK_MODEL` | Modèle DeepSeek; par défaut `deepseek-flash` |
+
+Après le fournisseur principal (`AI_PROVIDER`), Cabalou essaie l’autre fournisseur OpenAI/Groq s’il est configuré, puis les deux clés DeepSeek dans l’ordre ci-dessus. La cascade est commune au chatbot et à la génération de brouillons; le fournisseur principal reste prioritaire tant qu’il répond correctement. Chaque clé est utilisée séparément; les quotas des comptes ne sont pas cumulés dans une requête unique. Le modèle DeepSeek Flash annonce une fenêtre de contexte plus large, mais la taille utilisable dépend du modèle et du compte. Les clés restent côté serveur et ne sont jamais envoyées au navigateur.
+
+Documentation : [API Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion), [modèles et tarifs](https://api-docs.deepseek.com/quick_start/pricing).
 
 ### Google Search Console
 
@@ -66,17 +78,6 @@ Le connecteur utilise Meta Graph API `v27.0`. Le test de connexion lit seulement
 Documentation : [Meta Graph API — réactions (restriction sur les profils)](https://developers.facebook.com/docs/graph-api/reference/v27.0/object/reactions/), [Meta Graph API — Page Feed](https://developers.facebook.com/docs/graph-api/reference/page/feed/), [Meta for Developers](https://developers.facebook.com/apps/).
 
 Les publications vidéo affichent un lecteur avec commandes de lecture et de déplacement dans la vidéo. Le navigateur lit le flux via une route Cabalou authentifiée; le serveur récupère la source auprès de Meta et relaie les requêtes de plages d’octets, sans exposer le jeton de Page ni l’URL CDN au navigateur.
-
-### Meta Ads — retargeting
-
-| Variable | Description |
-|---|---|
-| `META_AD_ACCOUNT_ID` | ID numérique du compte publicitaire (avec ou sans préfixe `act_`) |
-| `META_ADS_ACCESS_TOKEN` | Jeton serveur avec accès de lecture au compte |
-
-Le connecteur utilise Meta Graph API `v27.0`. Le test lit l’identité et le statut du compte ; il ne crée ni ne modifie de campagne ou d’audience. L’activation de toute audience nécessite une conception distincte, des signaux de consentement vérifiables et des permissions Meta appropriées.
-
-Documentation : [Meta Marketing API — Ad Account](https://developers.facebook.com/docs/marketing-api/reference/ad-account/).
 
 ### TikTok — compte
 

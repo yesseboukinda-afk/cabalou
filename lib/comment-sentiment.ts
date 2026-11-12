@@ -57,6 +57,9 @@ function polarityOf(words: string[], index: number): -1 | 0 | 1 {
     const context = words.slice(Math.max(0, index - 2), Math.min(words.length, index + 3));
     if (!context.some((item) => ["excessive", "interminable", "long", "longue", "trop"].includes(item))) return 0;
   }
+  if (word === "manque" && words[index + 1] === "a"
+    && ["votre", "ta"].includes(words[index + 2] ?? "")
+    && ["liste", "selection"].includes(words[index + 3] ?? "")) return 1;
   if (["cher", "chere", "chers", "cheres"].includes(word)
     && courtesyTitles.has(words[index + 1] ?? "")) return 0;
   if (word === "bien" && ["cordialement", "compris", "note", "recu"].includes(words[index + 1] ?? "")) return 0;

@@ -27,6 +27,7 @@ describe("analyse locale du sentiment des commentaires", () => {
     assert.equal(classifyCommentSentiment("Merci, équipe excellente et très gentille !"), "positive");
     assert.equal(classifyCommentSentiment("Service décevant, attente longue et problème de réservation."), "negative");
     assert.equal(classifyCommentSentiment("Bonjour, pouvez-vous préciser les horaires ?"), "neutral");
+    assert.equal(classifyCommentSentiment("Voici l’appartement qu’il manque à votre liste."), "positive");
   });
 
   it("inverse le sens d’un terme après une négation proche", () => {
@@ -94,6 +95,76 @@ describe("génération de contenu IA", () => {
       else process.env.GROQ_API_KEY = originalGroqKey;
       if (originalGroqModel === undefined) delete process.env.GROQ_MODEL;
       else process.env.GROQ_MODEL = originalGroqModel;
+    }
+  });
+
+  it("bascule vers DeepSeek si OpenAI ne peut pas générer le brouillon", async () => {
+    const originalProvider = process.env.AI_PROVIDER;
+    const originalOpenAiKey = process.env.OPENAI_API_KEY;
+    const originalOpenAiModel = process.env.OPENAI_MODEL;
+    const originalGroqKey = process.env.GROQ_API_KEY;
+    const originalCabalouDeepseekKey = process.env.cabalou_deepseek_api;
+    const originalMaboundzaDeepseekKey = process.env.maboundza_deepseek_api;
+    const originalDeepseekModel = process.env.DEEPSEEK_MODEL;
+    const originalFetchForTest = globalThis.fetch;
+    const requests: { url: string; authorization: string; body: Record<string, unknown> }[] = [];
+    process.env.AI_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    process.env.OPENAI_MODEL = "gpt-test-model";
+    delete process.env.GROQ_API_KEY;
+    process.env.cabalou_deepseek_api = "test-cabalou-deepseek-key";
+    process.env.maboundza_deepseek_api = "test-maboundza-deepseek-key";
+    process.env.DEEPSEEK_MODEL = "deepseek-flash";
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      requests.push({
+        url,
+        authorization: new Headers(init?.headers).get("authorization") ?? "",
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      });
+      if (url.startsWith("https://api.openai.com/")) {
+        return Response.json({ error: { code: "rate_limit_exceeded" } }, { status: 429 });
+      }
+      return Response.json({ choices: [{ message: { content: "Un séjour accueillant vous attend." } }] });
+    }) as typeof fetch;
+    try {
+      const { generateContent } = await import("../lib/integrations");
+      const generated = await generateContent({
+        channel: "facebook",
+        objective: "Présenter un logement",
+        tone: "Chaleureux",
+        audience: "Familles",
+        brief: "",
+        facts: ["Logement à Libreville"],
+      });
+      assert.deepEqual(requests.map(({ url }) => url), [
+        "https://api.openai.com/v1/chat/completions",
+        "https://api.deepseek.com/chat/completions",
+      ]);
+      assert.deepEqual(requests.map(({ authorization }) => authorization), [
+        "Bearer test-openai-key",
+        "Bearer test-cabalou-deepseek-key",
+      ]);
+      assert.equal(requests[1].body.model, "deepseek-flash");
+      assert.deepEqual(requests[1].body.thinking, { type: "disabled" });
+      assert.equal(generated.model, "deepseek-flash");
+      assert.equal(generated.body, "Un séjour accueillant vous attend.");
+    } finally {
+      globalThis.fetch = originalFetchForTest;
+      if (originalProvider === undefined) delete process.env.AI_PROVIDER;
+      else process.env.AI_PROVIDER = originalProvider;
+      if (originalOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = originalOpenAiKey;
+      if (originalOpenAiModel === undefined) delete process.env.OPENAI_MODEL;
+      else process.env.OPENAI_MODEL = originalOpenAiModel;
+      if (originalGroqKey === undefined) delete process.env.GROQ_API_KEY;
+      else process.env.GROQ_API_KEY = originalGroqKey;
+      if (originalCabalouDeepseekKey === undefined) delete process.env.cabalou_deepseek_api;
+      else process.env.cabalou_deepseek_api = originalCabalouDeepseekKey;
+      if (originalMaboundzaDeepseekKey === undefined) delete process.env.maboundza_deepseek_api;
+      else process.env.maboundza_deepseek_api = originalMaboundzaDeepseekKey;
+      if (originalDeepseekModel === undefined) delete process.env.DEEPSEEK_MODEL;
+      else process.env.DEEPSEEK_MODEL = originalDeepseekModel;
     }
   });
 
@@ -172,7 +243,52 @@ describe("assistant de navigation Cabalou", () => {
       assert.equal(result.action.type, "none");
       const messages = requestBody?.messages as Array<{ role: string; content: string }>;
       assert.match(messages[0].content, /toute sorte de questions générales/u);
+      assert.match(messages[0].content, /Réponds dans la langue de l’utilisateur/u);
+      assert.match(messages[0].content, /raisonnement interne détaillé/u);
+      assert.match(messages[0].content, /question de clarification précise/u);
       assert.match(messages[0].content, /ne demande aucune action.*action\.type=none/u);
+      assert.equal(requestBody?.max_tokens, 1000);
+      const responseFormat = requestBody?.response_format as { json_schema: { schema: { properties: Record<string, unknown> } } };
+      const actionProperties = responseFormat.json_schema.schema.properties.action as { properties: Record<string, unknown> };
+      const contentProperties = actionProperties.properties.content as { properties: Record<string, unknown> };
+      assert.ok(actionProperties.properties.meta_post);
+      assert.equal(contentProperties.properties.meta_post, undefined);
+    } finally {
+      globalThis.fetch = originalFetchForTest;
+      if (originalProvider === undefined) delete process.env.AI_PROVIDER;
+      else process.env.AI_PROVIDER = originalProvider;
+      if (originalApiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = originalApiKey;
+      if (originalModel === undefined) delete process.env.OPENAI_MODEL;
+      else process.env.OPENAI_MODEL = originalModel;
+    }
+  });
+
+  it("garde la réponse quand une action facultative de préparation est invalide", async () => {
+    const originalProvider = process.env.AI_PROVIDER;
+    const originalApiKey = process.env.OPENAI_API_KEY;
+    const originalModel = process.env.OPENAI_MODEL;
+    const originalFetchForTest = globalThis.fetch;
+    process.env.AI_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    process.env.OPENAI_MODEL = "gpt-test-model";
+    globalThis.fetch = (async () => Response.json({
+      choices: [{ message: { content: JSON.stringify({
+        reply: "Bien sûr. Quel ton souhaites-tu donner au brouillon ?",
+        action: {
+          type: "prepare_content",
+          view: "content",
+          content: { title: "Idée", objective: "Présenter", tone: "Chaleureux", audience: "Familles", brief: "", channel: "instagram" },
+          meta_post: null,
+          operation: null,
+        },
+      }) } }],
+    })) as typeof fetch;
+    try {
+      const { chatWithSiteAssistant } = await import("../lib/site-assistant");
+      const result = await chatWithSiteAssistant({ message: "Aide-moi à préparer un brouillon" }, "admin");
+      assert.equal(result.reply, "Bien sûr. Quel ton souhaites-tu donner au brouillon ?");
+      assert.equal(result.action.type, "none");
     } finally {
       globalThis.fetch = originalFetchForTest;
       if (originalProvider === undefined) delete process.env.AI_PROVIDER;
@@ -246,8 +362,6 @@ describe("assistant de navigation Cabalou", () => {
         "https://api.openai.com/v1/chat/completions",
         "https://api.groq.com/openai/v1/chat/completions",
       ]);
-      assert.equal(result.provider, "groq");
-      assert.equal(result.fallback_used, true);
       assert.equal(result.reply, "Je vous accompagne avec Groq.");
 
       requestUrls.length = 0;
@@ -255,7 +369,7 @@ describe("assistant de navigation Cabalou", () => {
       delete process.env.OPENAI_MODEL;
       const unconfiguredResult = await chatWithSiteAssistant({ message: "Encore de l’aide" }, "admin");
       assert.deepEqual(requestUrls, ["https://api.groq.com/openai/v1/chat/completions"]);
-      assert.equal(unconfiguredResult.fallback_used, true);
+      assert.equal(unconfiguredResult.reply, "Je vous accompagne avec Groq.");
     } finally {
       globalThis.fetch = originalFetchForTest;
       if (originalProvider === undefined) delete process.env.AI_PROVIDER;
@@ -271,7 +385,72 @@ describe("assistant de navigation Cabalou", () => {
     }
   });
 
-  it("utilise Groq avec le modèle gratuit sélectionné et explique ses limites", async () => {
+  it("essaie les deux clés DeepSeek en cascade après l’échec du fournisseur principal", async () => {
+    const originalProvider = process.env.AI_PROVIDER;
+    const originalOpenAiKey = process.env.OPENAI_API_KEY;
+    const originalOpenAiModel = process.env.OPENAI_MODEL;
+    const originalGroqKey = process.env.GROQ_API_KEY;
+    const originalCabalouDeepseekKey = process.env.cabalou_deepseek_api;
+    const originalMaboundzaDeepseekKey = process.env.maboundza_deepseek_api;
+    const originalDeepseekModel = process.env.DEEPSEEK_MODEL;
+    const originalFetchForTest = globalThis.fetch;
+    const requests: { url: string; authorization: string; body: Record<string, unknown> }[] = [];
+    process.env.AI_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "test-openai-key";
+    process.env.OPENAI_MODEL = "gpt-test-model";
+    delete process.env.GROQ_API_KEY;
+    process.env.cabalou_deepseek_api = "test-cabalou-deepseek-key";
+    process.env.maboundza_deepseek_api = "test-maboundza-deepseek-key";
+    process.env.DEEPSEEK_MODEL = "deepseek-flash";
+    globalThis.fetch = (async (input, init) => {
+      requests.push({
+        url: String(input),
+        authorization: new Headers(init?.headers).get("authorization") ?? "",
+        body: JSON.parse(String(init?.body)) as Record<string, unknown>,
+      });
+      if (requests.length < 3) return Response.json({ error: { code: "rate_limit_exceeded" } }, { status: 429 });
+      return Response.json({ choices: [{ message: { content: JSON.stringify({
+        reply: "Je vous accompagne avec DeepSeek.",
+        action: { type: "none", view: null, content: null, meta_post: null, operation: null },
+      }) } }] });
+    }) as typeof fetch;
+    try {
+      const { chatWithSiteAssistant } = await import("../lib/site-assistant");
+      const result = await chatWithSiteAssistant({ message: "Aide-moi" }, "admin");
+      assert.deepEqual(requests.map(({ url }) => url), [
+        "https://api.openai.com/v1/chat/completions",
+        "https://api.deepseek.com/chat/completions",
+        "https://api.deepseek.com/chat/completions",
+      ]);
+      assert.deepEqual(requests.map(({ authorization }) => authorization), [
+        "Bearer test-openai-key",
+        "Bearer test-cabalou-deepseek-key",
+        "Bearer test-maboundza-deepseek-key",
+      ]);
+      assert.equal(requests[1].body.model, "deepseek-flash");
+      assert.deepEqual(requests[1].body.thinking, { type: "disabled" });
+      assert.deepEqual(requests[1].body.response_format, { type: "json_object" });
+      assert.equal(result.reply, "Je vous accompagne avec DeepSeek.");
+    } finally {
+      globalThis.fetch = originalFetchForTest;
+      if (originalProvider === undefined) delete process.env.AI_PROVIDER;
+      else process.env.AI_PROVIDER = originalProvider;
+      if (originalOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = originalOpenAiKey;
+      if (originalOpenAiModel === undefined) delete process.env.OPENAI_MODEL;
+      else process.env.OPENAI_MODEL = originalOpenAiModel;
+      if (originalGroqKey === undefined) delete process.env.GROQ_API_KEY;
+      else process.env.GROQ_API_KEY = originalGroqKey;
+      if (originalCabalouDeepseekKey === undefined) delete process.env.cabalou_deepseek_api;
+      else process.env.cabalou_deepseek_api = originalCabalouDeepseekKey;
+      if (originalMaboundzaDeepseekKey === undefined) delete process.env.maboundza_deepseek_api;
+      else process.env.maboundza_deepseek_api = originalMaboundzaDeepseekKey;
+      if (originalDeepseekModel === undefined) delete process.env.DEEPSEEK_MODEL;
+      else process.env.DEEPSEEK_MODEL = originalDeepseekModel;
+    }
+  });
+
+  it("utilise Groq sélectionné sans exposer les erreurs du fournisseur", async () => {
     const originalProvider = process.env.AI_PROVIDER;
     const originalGroqKey = process.env.GROQ_API_KEY;
     const originalGroqModel = process.env.GROQ_MODEL;
@@ -302,7 +481,7 @@ describe("assistant de navigation Cabalou", () => {
       globalThis.fetch = (async () => Response.json({
         error: { code: "rate_limit_exceeded" },
       }, { status: 429 })) as typeof fetch;
-      await assert.rejects(chatWithSiteAssistant({ message: "Aide-moi" }, "admin"), /limite gratuite Groq/u);
+      await assert.rejects(chatWithSiteAssistant({ message: "Aide-moi" }, "admin"), /Je ne peux pas répondre pour le moment/u);
     } finally {
       globalThis.fetch = originalFetchForTest;
       if (originalProvider === undefined) delete process.env.AI_PROVIDER;
@@ -529,7 +708,7 @@ describe("assistant de navigation Cabalou", () => {
     }
   });
 
-  it("explique quand le projet OpenAI a épuisé ses crédits API", async () => {
+  it("masque les détails techniques lorsque la cascade OpenAI échoue", async () => {
     const originalProvider = process.env.AI_PROVIDER;
     const originalApiKey = process.env.OPENAI_API_KEY;
     const originalModel = process.env.OPENAI_MODEL;
@@ -546,7 +725,7 @@ describe("assistant de navigation Cabalou", () => {
       const { chatWithSiteAssistant } = await import("../lib/site-assistant");
       await assert.rejects(
         chatWithSiteAssistant({ message: "Aide-moi" }, "admin"),
-        /plus de crédits API.*abonnement ChatGPT est distinct/iu,
+        /Je ne peux pas répondre pour le moment/u,
       );
     } finally {
       globalThis.fetch = originalFetchForTest;
@@ -558,6 +737,46 @@ describe("assistant de navigation Cabalou", () => {
       else process.env.OPENAI_MODEL = originalModel;
       if (originalGroqKey === undefined) delete process.env.GROQ_API_KEY;
       else process.env.GROQ_API_KEY = originalGroqKey;
+    }
+  });
+
+  it("ne révèle pas le refus DeepSeek à l’utilisateur", async () => {
+    const originalProvider = process.env.AI_PROVIDER;
+    const originalOpenAiKey = process.env.OPENAI_API_KEY;
+    const originalOpenAiModel = process.env.OPENAI_MODEL;
+    const originalGroqKey = process.env.GROQ_API_KEY;
+    const originalCabalouDeepseekKey = process.env.cabalou_deepseek_api;
+    const originalMaboundzaDeepseekKey = process.env.maboundza_deepseek_api;
+    const originalFetchForTest = globalThis.fetch;
+    process.env.AI_PROVIDER = "openai";
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.OPENAI_MODEL;
+    delete process.env.GROQ_API_KEY;
+    process.env.cabalou_deepseek_api = "test-cabalou-deepseek-key";
+    delete process.env.maboundza_deepseek_api;
+    globalThis.fetch = (async () => Response.json({
+      error: { code: "model_not_found", message: "provider detail" },
+    }, { status: 403 })) as typeof fetch;
+    try {
+      const { chatWithSiteAssistant } = await import("../lib/site-assistant");
+      await assert.rejects(
+        chatWithSiteAssistant({ message: "Aide-moi" }, "admin"),
+        /Je ne peux pas répondre pour le moment/u,
+      );
+    } finally {
+      globalThis.fetch = originalFetchForTest;
+      if (originalProvider === undefined) delete process.env.AI_PROVIDER;
+      else process.env.AI_PROVIDER = originalProvider;
+      if (originalOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = originalOpenAiKey;
+      if (originalOpenAiModel === undefined) delete process.env.OPENAI_MODEL;
+      else process.env.OPENAI_MODEL = originalOpenAiModel;
+      if (originalGroqKey === undefined) delete process.env.GROQ_API_KEY;
+      else process.env.GROQ_API_KEY = originalGroqKey;
+      if (originalCabalouDeepseekKey === undefined) delete process.env.cabalou_deepseek_api;
+      else process.env.cabalou_deepseek_api = originalCabalouDeepseekKey;
+      if (originalMaboundzaDeepseekKey === undefined) delete process.env.maboundza_deepseek_api;
+      else process.env.maboundza_deepseek_api = originalMaboundzaDeepseekKey;
     }
   });
 });

@@ -30,7 +30,6 @@ type Message = {
   content: string;
   action?: SiteAssistantAction;
   confirmed?: boolean;
-  fallbackUsed?: boolean;
   executionStatus?: "executing" | "executed" | "failed" | "cancelled";
 };
 
@@ -120,7 +119,6 @@ export function SiteAssistant({
         role: "assistant",
         content: reply,
         action: action as SiteAssistantAction,
-        fallbackUsed: response?.fallback_used === true,
       }]);
     } catch (reason) {
       setMessages((current) => current.slice(0, -1));
@@ -217,7 +215,6 @@ export function SiteAssistant({
           </div>
         </div>}
         {messages.map((message, index) => <article className={`site-assistant-message ${message.role}`} key={`${index}-${message.role}`}>
-          {message.fallbackUsed && <small className="site-assistant-fallback">OpenAI indisponible : réponse fournie par Groq.</small>}
           <p>{message.content}</p>
           {message.action && message.action.type !== "none" && <div className="site-assistant-proposal">
             {message.action.type === "navigate" && <strong>Ouvrir : {availableViews.find((item) => item.id === message.action?.view)?.label ?? "une page"}</strong>}

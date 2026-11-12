@@ -1,7 +1,7 @@
 import nodemailer from "nodemailer";
 import { HttpError } from "./security";
 import { listListings } from "./service";
-import { aiProviderConfig, aiProviderStatus } from "./ai-provider";
+import { aiProviderCascade, aiProviderConfig, aiProviderStatus } from "./ai-provider";
 
 const TIMEOUT_MS = 12_000;
 export const META_PAGE_IMAGE_MAX_BYTES = 10_000_000;
@@ -51,12 +51,6 @@ const INTEGRATIONS: Integration[] = [
     id: "meta_page", name: "Meta — Page Facebook", description: "Vérifie le jeton et l’accès en lecture à la Page.",
     required_environment: ["META_PAGE_ID", "META_PAGE_ACCESS_TOKEN"], setup_url: "https://developers.facebook.com/apps/",
     scopes: "Jeton de Page et permissions minimales approuvées par Meta.", purpose: "Aucune publication ni lecture de commentaires n’est effectuée.",
-  },
-  {
-    id: "meta_ads", name: "Meta Ads — retargeting", description: "Vérifie le jeton et l’accès en lecture au compte publicitaire.",
-    required_environment: ["META_AD_ACCOUNT_ID", "META_ADS_ACCESS_TOKEN"], setup_url: "https://developers.facebook.com/docs/marketing-api/",
-    scopes: "Accès de lecture au compte publicitaire. Les audiences ne sont pas modifiées.",
-    purpose: "Aucune audience, campagne ou donnée de contact n’est envoyée.",
   },
   {
     id: "facebook_groups_manual", name: "Groupes Facebook — traitement manuel",
@@ -137,7 +131,7 @@ function metaFailureMessage(code: number | undefined, url: string, method?: stri
   return `Meta a refusé la requête${code ? ` (code ${code})` : ""}. Vérifiez les permissions et l’accès à la Page.`;
 }
 
-async function requestJson(url: string, init?: RequestInit, provider?: "Meta" | "Groq" | "OpenAI", metaContext?: MetaRequestContext, timeoutMs = TIMEOUT_MS): Promise<Record<string, unknown>> {
+async function requestJson(url: string, init?: RequestInit, provider?: "Meta" | "Groq" | "OpenAI" | "DeepSeek", metaContext?: MetaRequestContext, timeoutMs = TIMEOUT_MS): Promise<Record<string, unknown>> {
   let response: Response;
   try {
     response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs), headers: {
@@ -171,6 +165,9 @@ async function requestJson(url: string, init?: RequestInit, provider?: "Meta" | 
       if (object(error).code === "insufficient_quota") {
         throw new HttpError(402, "Le projet OpenAI n’a plus de crédits API. L’abonnement ChatGPT est distinct de la facturation API.");
       }
+    }
+    if (provider === "DeepSeek" && response.status === 429) {
+      throw new HttpError(429, "La limite de requêtes DeepSeek est atteinte ou temporairement saturée.");
     }
     throw new HttpError(400, `Le fournisseur a refusé la vérification (HTTP ${response.status}). Vérifiez les droits et identifiants.`);
   }
@@ -492,19 +489,17 @@ async function checkProvider(id: string): Promise<string> {
     return `Groq accessible; le modèle « ${config.model} » est disponible.`;
   }
   if (id === "google_search_console") return checkGoogle();
-  if (id === "meta_page" || id === "meta_ads") {
-    const isPage = id === "meta_page";
-    const accountId = isPage ? process.env.META_PAGE_ID! : `act_${process.env.META_AD_ACCOUNT_ID!.replace(/^act_/, "")}`;
-    if (!isPage && !/^act_\d+$/.test(accountId)) throw new HttpError(400, "META_AD_ACCOUNT_ID doit être un identifiant numérique.");
-    const token = isPage ? process.env.META_PAGE_ACCESS_TOKEN! : process.env.META_ADS_ACCESS_TOKEN!;
-    const fields = isPage ? "id,name" : "id,name,account_status";
+  if (id === "meta_page") {
+    const accountId = process.env.META_PAGE_ID!;
+    const token = process.env.META_PAGE_ACCESS_TOKEN!;
+    const fields = "id,name";
     const url = `https://graph.facebook.com/${META_VERSION}/${encodeURIComponent(accountId)}?${new URLSearchParams({ fields })}`;
     const result = await requestJson(url, {
       headers: { Authorization: `Bearer ${token}` },
       }, "Meta", "page-read");
       apiSuccess(result, "Meta", url, undefined, "page-read");
     if (string(result.id) !== accountId) throw new HttpError(400, "Meta a retourné un compte différent de celui configuré.");
-    return isPage ? "Jeton Meta valide; Page accessible en lecture." : "Jeton Meta Ads valide; compte publicitaire accessible en lecture.";
+    return "Jeton Meta valide; Page accessible en lecture.";
   }
   if (id === "tiktok_account") {
     const profile = await requestJson("https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name", {
@@ -1043,8 +1038,9 @@ function cleanText(value: unknown, label: string, limit: number, required = true
 }
 
 export async function generateContent(data: Record<string, unknown>) {
-  const provider = aiProviderConfig();
-  configured(provider.id);
+  const providers = aiProviderCascade();
+  const primaryProvider = providers[0];
+  if (primaryProvider.id !== "deepseek") configured(primaryProvider.id);
   const channel = cleanText(data.channel, "réseau", 20);
   if (!["facebook", "tiktok"].includes(channel)) throw new HttpError(400, "Le réseau doit être Facebook ou TikTok.");
   const objective = cleanText(data.objective, "objectif", 240);
@@ -1074,19 +1070,27 @@ export async function generateContent(data: Record<string, unknown>) {
     `Brief de l’opérateur : ${brief || "Aucun brief complémentaire."}`,
     "Faits publiables vérifiés :", ...(facts.length ? facts.map((fact) => `- ${fact}`) : ["- Aucun fait fourni."]),
   ].join("\n");
-  const response = await requestJson(`${provider.apiUrl}/chat/completions`, {
-    method: "POST", headers: { Authorization: `Bearer ${provider.apiKey}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: provider.model,
-      messages: [{ role: "system", content: instructions }, { role: "user", content: input }],
-      max_tokens: 700,
-    }),
-  }, provider.id === "groq" ? "Groq" : "OpenAI");
-  apiSuccess(response, provider.name);
-  const choices = Array.isArray(response.choices) ? response.choices : [];
-  const firstChoice = choices[0] && typeof choices[0] === "object" ? choices[0] as Record<string, unknown> : {};
-  const message = firstChoice.message && typeof firstChoice.message === "object" ? firstChoice.message as Record<string, unknown> : {};
-  const output = string(message.content);
-  if (!output.trim() || output.length > 5000) throw new HttpError(400, `${provider.name} n’a pas retourné de brouillon exploitable.`);
-  return { body: output.trim(), model: provider.model, listingId };
+  for (const [index, provider] of providers.entries()) {
+    try {
+      const response = await requestJson(`${provider.apiUrl}/chat/completions`, {
+        method: "POST", headers: { Authorization: `Bearer ${provider.apiKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: provider.model,
+          messages: [{ role: "system", content: instructions }, { role: "user", content: input }],
+          ...(provider.id === "deepseek" ? { thinking: { type: "disabled" } } : {}),
+          max_tokens: 700,
+        }),
+      }, provider.id === "deepseek" ? "DeepSeek" : provider.id === "groq" ? "Groq" : "OpenAI");
+      apiSuccess(response, provider.name);
+      const choices = Array.isArray(response.choices) ? response.choices : [];
+      const firstChoice = choices[0] && typeof choices[0] === "object" ? choices[0] as Record<string, unknown> : {};
+      const message = firstChoice.message && typeof firstChoice.message === "object" ? firstChoice.message as Record<string, unknown> : {};
+      const output = string(message.content);
+      if (!output.trim() || output.length > 5000) throw new HttpError(400, `${provider.name} n’a pas retourné de brouillon exploitable.`);
+      return { body: output.trim(), model: provider.model, listingId };
+    } catch (error) {
+      if (!(error instanceof HttpError) || index === providers.length - 1) throw error;
+    }
+  }
+  throw new HttpError(503, "Aucun fournisseur IA n’a pu générer le brouillon.");
 }
