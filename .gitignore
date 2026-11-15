@@ -3,8 +3,15 @@ node_modules/
 out/
 coverage/
 *.tsbuildinfo
-.env
-.env.local
-data/*.sqlite3-shm
-data/*.sqlite3-wal
-data/*.sqlite3
+.env*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+service-account*.json
+# Local databases and their journal files
+data/
+scripts/init-db.ts
+scripts/supabase-schema.sql

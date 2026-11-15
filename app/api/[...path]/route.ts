@@ -5,9 +5,9 @@ import {
   clearSessionCookie, recordLoginFailure, ROLES_CAN_EDIT, type User,
 } from "../../../lib/security";
 import {
-  auditEvents, dashboard, deletePostImage, getPostImage, KPI_DEFINITIONS, latestIntegrationChecks,
+  auditEvents, dashboard, deletePost, deletePostImage, getPostImage, KPI_DEFINITIONS, latestIntegrationChecks,
   listListings, listPosts, listUsers, monthlyReport, recordAiGeneration, recordIntegrationCheck,
-  recordManualPublication, reviewPost, saveMonthlyReport, savePost, savePostImage, saveSeoMetric, seoMetrics,
+  recordManualPublication, replaceSearchConsoleMetrics, reviewPost, saveMonthlyReport, savePost, savePostImage, saveSeoMetric, seoMetrics,
   submitPost, updateUser,
 } from "../../../lib/service";
 import { createUser } from "../../../lib/service";
@@ -17,12 +17,13 @@ import {
 } from "../../../lib/workflows";
 import { initializeDatabase } from "../../../lib/db";
 import {
-  integrationStatus, testIntegration, generateContent, listMetaPageComments,
+  integrationStatus, testIntegration, generateContent, listMetaPageComments, listMetaScheduledPagePosts,
   listOlderMetaPostComments, listMetaPostComments, listMetaPostReactions, getMetaPostImage, getMetaPostVideo,
   listMetaPostPhotoAttachments, getMetaPostPhotoAttachment, replaceMetaPagePostPhotos, addMetaPostComment,
   replyToMetaComment, editMetaComment, publishMetaPagePost, publishMetaPageMedia,
   META_PAGE_ALBUM_MAX_PHOTOS, META_PAGE_IMAGE_MAX_BYTES, META_PAGE_MEDIA_REQUEST_MAX_BYTES, META_PAGE_VIDEO_MAX_BYTES,
   editMetaPagePost, deleteMetaPagePost, deleteMetaComment,
+  fetchGoogleSearchConsoleMetrics, validateGoogleSearchConsoleDateRange,
 } from "../../../lib/integrations";
 import { SupabaseAuthError } from "../../../lib/supabase-auth";
 import { chatWithSiteAssistant } from "../../../lib/site-assistant";
@@ -53,6 +54,15 @@ function asId(raw: string | undefined) {
   const id = Number(raw);
   if (!Number.isSafeInteger(id)) throw new HttpError(400, "Identifiant invalide.");
   return id;
+}
+
+function defaultSeoDateRange() {
+  const end = new Date();
+  end.setUTCHours(0, 0, 0, 0);
+  end.setUTCDate(end.getUTCDate() - 3);
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - 27);
+  return { startDate: start.toISOString().slice(0, 10), endDate: end.toISOString().slice(0, 10) };
 }
 
 async function body(request: NextRequest): Promise<Record<string, unknown>> {
@@ -209,9 +219,11 @@ export async function GET(request: NextRequest) {
       return new NextResponse(video.body, { status: video.status, headers });
     }
     if (parts[1] === "meta" && parts[2] === "comments" && parts.length === 3) {
-      const after = new URL(request.url).searchParams.get("after") ?? undefined;
-      return json(await listMetaPageComments(after));
+      const searchParams = new URL(request.url).searchParams;
+      const after = searchParams.get("after") ?? undefined;
+      return json(await listMetaPageComments(after, searchParams.get("refresh") === "1"));
     }
+    if (path === "/api/meta/scheduled-posts") return json(await listMetaScheduledPagePosts());
     if (parts[1] === "meta" && parts[2] === "posts" && parts[4] === "comments" && parts.length === 5) {
       const after = new URL(request.url).searchParams.get("after") ?? undefined;
       return json(after
@@ -224,7 +236,21 @@ export async function GET(request: NextRequest) {
     }
     if (path === "/api/posts") return json({ posts: await listPosts() });
     if (path === "/api/listings") return json({ listings: await listListings() });
-    if (path === "/api/seo") return json({ metrics: await seoMetrics(), connected: false });
+    if (path === "/api/seo") {
+      const url = new URL(request.url);
+      const start = url.searchParams.get("start_date");
+      const end = url.searchParams.get("end_date");
+      const range = start === null && end === null
+        ? defaultSeoDateRange()
+        : validateGoogleSearchConsoleDateRange(start, end);
+      const google = integrationStatus().find((item) => item.id === "google_search_console");
+      return json({
+        ...await seoMetrics(range.startDate, range.endDate),
+        configured: Boolean(google && google.missing_environment.length === 0),
+        start_date: range.startDate,
+        end_date: range.endDate,
+      });
+    }
     if (path === "/api/reports") {
       const month = new URL(request.url).searchParams.get("month") ?? new Date().toISOString().slice(0, 7);
       return json({ definitions: KPI_DEFINITIONS, report: await monthlyReport(month) });
@@ -240,9 +266,21 @@ export async function GET(request: NextRequest) {
     }
     if (path === "/api/integrations") {
       const checks = await latestIntegrationChecks();
-      return json({ integrations: integrationStatus().map((item) => ({
-        ...item, last_check: checks[item.id] ?? null,
-      })) });
+      const integrations = integrationStatus().map((item) => {
+        const check = checks[item.id] ?? null;
+        const configured = item.missing_environment.length === 0;
+        if (user.role === "admin") return { ...item, configured, last_check: check };
+        return {
+          id: item.id,
+          name: item.name,
+          description: item.description,
+          active: item.active,
+          status: item.status,
+          configured,
+          last_check: check ? { checked_at: check.checked_at, succeeded: check.succeeded } : null,
+        };
+      });
+      return json({ integrations });
     }
     if (path === "/api/audit") {
       role(user, ["admin", "marketing_manager"]);
@@ -291,6 +329,13 @@ export async function POST(request: NextRequest) {
       clearSessionCookie(response);
       return response;
     }
+    if (path === "/api/seo/sync") {
+      role(user, ["admin", "marketing_manager"]);
+      const data = await body(request);
+      const range = validateGoogleSearchConsoleDateRange(data.start_date, data.end_date);
+      const { metrics, dailyMetrics } = await fetchGoogleSearchConsoleMetrics(range.startDate, range.endDate);
+      return json(await replaceSearchConsoleMetrics(user.id, range.startDate, range.endDate, metrics, dailyMetrics));
+    }
     if (path === "/api/assistant/chat") {
       return json(await chatWithSiteAssistant(await body(request), user.role));
     }
@@ -319,6 +364,10 @@ export async function POST(request: NextRequest) {
         }
         const message = form.get("message");
         const selectedMedia = form.getAll("media");
+        const scheduledAt = form.get("scheduled_publish_time");
+        if (scheduledAt !== null && typeof scheduledAt !== "string") {
+          throw new HttpError(400, "La date de programmation est invalide.");
+        }
         const files = selectedMedia.filter((item): item is File => item instanceof File);
         if (typeof message !== "string" || !selectedMedia.length || files.length !== selectedMedia.length) {
           throw new HttpError(400, "Ajoutez des photos ou une vidéo à la publication.");
@@ -352,10 +401,10 @@ export async function POST(request: NextRequest) {
           const filename = file.name.replace(/[^\w.-]/g, "_").slice(0, 120) || (validMp4 ? "video.mp4" : "photo");
           media.push({ name: filename, type: file.type, bytes });
         }
-        return json(responseKey("post", await publishMetaPageMedia(message, media)));
+        return json(responseKey("post", await publishMetaPageMedia(message, media, scheduledAt ?? undefined)));
       }
       const data = await body(request);
-      return json(responseKey("post", await publishMetaPagePost(data.message)));
+      return json(responseKey("post", await publishMetaPagePost(data.message, data.scheduled_publish_time)));
     }
     const data = await body(request);
     if (path === "/api/users") {
@@ -507,6 +556,9 @@ export async function DELETE(request: NextRequest) {
       return json(responseKey("comment", await deleteMetaComment(parts[3], ["admin", "marketing_manager"].includes(user.role))));
     }
     role(user, ROLES_CAN_EDIT);
+    if (parts[1] === "posts" && parts.length === 3) {
+      return json(responseKey("post", await deletePost(user.id, asId(parts[2]))));
+    }
     if (parts[1] !== "posts" || parts.length !== 4 || parts[3] !== "image") {
       throw new HttpError(404, "Ressource API introuvable.");
     }

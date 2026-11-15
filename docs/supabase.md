@@ -20,6 +20,9 @@ Dans **Vercel → Project → Settings → Environment Variables**, configurez :
 
 Ajoutez les variables aux environnements Vercel concernés, puis redéployez.
 Ne mettez jamais la chaîne de connexion ni le secret dans Git ou dans le code.
+Les fichiers `.env*`, les clés privées et la base locale `data/` sont exclus
+du paquet de déploiement Vercel. La configuration de production doit rester
+dans les variables d’environnement de Vercel.
 
 ## Authentification Supabase
 

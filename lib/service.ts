@@ -40,6 +40,18 @@ export const KPI_METRICS = Object.fromEntries(
 
 type JsonObject = Record<string, unknown>;
 
+export type SeoSearchConsoleMetric = {
+  metric_date: string;
+  query_text: string;
+  page_url: string;
+  country: string;
+  device: string;
+  clicks: number;
+  impressions: number;
+  ctr: number;
+  average_position: number;
+};
+
 function text(data: JsonObject, key: string, label: string, max: number, required = true): string {
   const value = data[key] ?? "";
   if (typeof value !== "string") throw new HttpError(400, `Le champ « ${label} » est invalide.`);
@@ -234,6 +246,29 @@ export async function savePost(actorId: number, id: number | null, data: JsonObj
   } finally { await db.close(); }
 }
 
+export async function deletePost(actorId: number, id: number) {
+  const db = connectDatabase();
+  try {
+    await db.exec("BEGIN IMMEDIATE");
+    try {
+      const row = await db.prepare(
+        "SELECT status FROM posts WHERE id=? AND is_demo=0",
+      ).get(id) as { status: string } | undefined;
+      if (!row) throw new HttpError(404, "Contenu introuvable.");
+      if (row.status !== "draft" && row.status !== "rejected") {
+        throw new HttpError(400, "Seuls les brouillons ou contenus rejetés peuvent être supprimés.");
+      }
+      await db.prepare("DELETE FROM posts WHERE id=? AND is_demo=0").run(id);
+      await addAudit(db, actorId, "post.deleted", "post", id);
+      await db.exec("COMMIT");
+      return { id };
+    } catch (error) {
+      try { await db.exec("ROLLBACK"); } catch { /* transaction may not have started */ }
+      throw error;
+    }
+  } finally { await db.close(); }
+}
+
 export async function submitPost(actorId: number, id: number) {
   const db = connectDatabase();
   try {
@@ -335,7 +370,7 @@ export async function dashboard() {
     ).all() as { status: string; count: number }[]).map((row) => [row.status, row.count]));
     const seo = await db.prepare(
       `SELECT SUM(clicks) AS clicks, SUM(impressions) AS impressions,
-       CASE WHEN SUM(impressions)>0 THEN SUM(clicks)*1.0/SUM(impressions) ELSE NULL END AS ctr,
+       CASE WHEN SUM(impressions)>0 THEN CAST(SUM(clicks)*1.0/SUM(impressions) AS REAL) ELSE NULL END AS ctr,
        CASE WHEN SUM(impressions)>0 THEN SUM(average_position*impressions)/SUM(impressions) ELSE NULL END AS average_position,
        MAX(metric_date) AS latest_date FROM seo_metrics WHERE source!='demo'`,
     ).get();
@@ -347,12 +382,82 @@ export async function dashboard() {
   } finally { await db.close(); }
 }
 
-export async function seoMetrics() {
+export async function seoMetrics(startDate: string, endDate: string) {
   const db = connectDatabase();
   try {
-    return await db.prepare(
-      "SELECT metric_date, query_text, page_path, clicks, impressions, ctr, average_position, source FROM seo_metrics WHERE source!='demo' ORDER BY metric_date DESC, clicks DESC",
-    ).all();
+    const [manualMetrics, searchConsoleMetrics, dailyMetrics, summary, latestSync] = await Promise.all([
+      db.prepare(`SELECT metric_date, query_text, page_path, clicks, impressions, ctr, average_position, source
+        FROM seo_metrics WHERE source!='demo' AND metric_date BETWEEN ? AND ? ORDER BY metric_date DESC, clicks DESC`)
+        .all(startDate, endDate),
+      db.prepare(`SELECT metric_date, query_text, page_url, country, device, clicks, impressions, ctr, average_position
+        FROM seo_search_console_metrics
+        WHERE metric_date BETWEEN ? AND ? AND (query_text!='' OR page_url!='' OR country!='' OR device!='')
+        ORDER BY metric_date DESC, clicks DESC`).all(startDate, endDate),
+      db.prepare(`SELECT metric_date, clicks, impressions, ctr, average_position FROM seo_search_console_metrics
+        WHERE metric_date BETWEEN ? AND ? AND query_text='' AND page_url='' AND country='' AND device=''
+        ORDER BY metric_date ASC`).all(startDate, endDate),
+      db.prepare(`SELECT COALESCE(SUM(clicks), 0) AS clicks, COALESCE(SUM(impressions), 0) AS impressions,
+        CASE WHEN SUM(impressions)>0 THEN CAST(SUM(clicks)*1.0/SUM(impressions) AS REAL) ELSE NULL END AS ctr,
+        CASE WHEN SUM(impressions)>0 THEN SUM(average_position*impressions)/SUM(impressions) ELSE NULL END AS average_position,
+        MAX(metric_date) AS latest_date FROM seo_search_console_metrics
+        WHERE metric_date BETWEEN ? AND ? AND query_text='' AND page_url='' AND country='' AND device=''`)
+        .get(startDate, endDate),
+      db.prepare(`SELECT start_date, end_date, rows_synced, synced_at FROM seo_search_console_syncs
+        ORDER BY id DESC LIMIT 1`).get(),
+    ]);
+    return {
+      metrics: manualMetrics,
+      search_console_metrics: searchConsoleMetrics,
+      daily_metrics: dailyMetrics,
+      summary: summary ?? { clicks: 0, impressions: 0, ctr: null, average_position: null, latest_date: null },
+      latest_sync: latestSync ?? null,
+    };
+  } finally { await db.close(); }
+}
+
+export async function replaceSearchConsoleMetrics(
+  actorId: number,
+  startDate: string,
+  endDate: string,
+  metrics: SeoSearchConsoleMetric[],
+  dailyMetrics: SeoSearchConsoleMetric[],
+) {
+  const db = connectDatabase();
+  try {
+    await db.exec("BEGIN IMMEDIATE");
+    try {
+      await db.prepare("DELETE FROM seo_search_console_metrics WHERE metric_date BETWEEN ? AND ?")
+        .run(startDate, endDate);
+      const allMetrics = [...metrics, ...dailyMetrics];
+      const batchSize = 100;
+      for (let offset = 0; offset < allMetrics.length; offset += batchSize) {
+        const batch = allMetrics.slice(offset, offset + batchSize);
+        const values = batch.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ");
+        const parameters = batch.flatMap((metric) => [
+          metric.metric_date, metric.query_text, metric.page_url, metric.country, metric.device,
+          metric.clicks, metric.impressions, metric.ctr, metric.average_position,
+        ]);
+        await db.prepare(`INSERT INTO seo_search_console_metrics
+          (metric_date, query_text, page_url, country, device, clicks, impressions, ctr, average_position)
+          VALUES ${values}
+          ON CONFLICT(metric_date, query_text, page_url, country, device) DO UPDATE SET
+          clicks=excluded.clicks, impressions=excluded.impressions, ctr=excluded.ctr,
+          average_position=excluded.average_position`).run(...parameters);
+      }
+      const syncedAt = utcNow();
+      await db.prepare(`INSERT INTO seo_search_console_syncs
+        (start_date, end_date, rows_synced, synced_at, actor_id) VALUES (?, ?, ?, ?, ?)`)
+        .run(startDate, endDate, metrics.length, syncedAt, actorId);
+      await addAudit(
+        db, actorId, "seo.search_console_synced", "seo_metrics", `${startDate}:${endDate}`,
+        `rows=${metrics.length}`,
+      );
+      await db.exec("COMMIT");
+      return { rows_synced: metrics.length, synced_at: syncedAt };
+    } catch (error) {
+      try { await db.exec("ROLLBACK"); } catch { /* transaction may not have started */ }
+      throw error;
+    }
   } finally { await db.close(); }
 }
 

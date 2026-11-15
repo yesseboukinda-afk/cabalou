@@ -1,9 +1,15 @@
 import nodemailer from "nodemailer";
 import { HttpError } from "./security";
-import { listListings } from "./service";
+import { listListings, type SeoSearchConsoleMetric } from "./service";
 import { aiProviderCascade, aiProviderConfig, aiProviderStatus } from "./ai-provider";
 
 const TIMEOUT_MS = 12_000;
+const GOOGLE_SEARCH_CONSOLE_PAGE_SIZE = 1_000;
+const GOOGLE_SEARCH_CONSOLE_MAX_ROWS = 10_000;
+const GOOGLE_SEARCH_CONSOLE_MAX_RESPONSE_BYTES = 5_000_000;
+const GOOGLE_SEARCH_CONSOLE_MAX_RANGE_DAYS = 90;
+const META_SCHEDULE_MIN_LEAD_TIME_MS = 10 * 60_000;
+const META_SCHEDULE_MAX_LEAD_TIME_MS = 30 * 24 * 60 * 60_000;
 export const META_PAGE_IMAGE_MAX_BYTES = 10_000_000;
 export const META_PAGE_VIDEO_MAX_BYTES = 100_000_000;
 export const META_PAGE_ALBUM_MAX_PHOTOS = 10;
@@ -26,14 +32,14 @@ type Integration = {
 const INTEGRATIONS: Integration[] = [
   {
     id: "openai", name: "OpenAI — chatbot et génération IA",
-    description: "Vérifie le modèle configuré. Aucun texte Cabalou n’est transmis lors du test.",
+    description: "Fournit une aide à la rédaction et à la création de contenu.",
     required_environment: ["OPENAI_API_KEY", "OPENAI_MODEL"],
     setup_url: "https://platform.openai.com/api-keys", scopes: "API key limitée au projet de production Cabalou.",
     purpose: "Aucune requête de génération n’est lancée par le test.",
   },
   {
     id: "groq", name: "Groq — chatbot et génération IA",
-    description: "Fournisseur avec offre gratuite limitée et API compatible OpenAI. Les quotas dépendent du compte.",
+    description: "Fournit une aide à la rédaction et à la création de contenu.",
     required_environment: ["GROQ_API_KEY"],
     setup_url: "https://console.groq.com/keys",
     scopes: "Clé API Groq côté serveur; modèle par défaut openai/gpt-oss-20b.",
@@ -41,44 +47,44 @@ const INTEGRATIONS: Integration[] = [
   },
   {
     id: "google_search_console", name: "Google Search Console",
-    description: "Vérifie l’accès OAuth en lecture et la propriété Search Console configurée.",
+    description: "Affiche les performances du site dans les résultats de recherche Google.",
     required_environment: ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN", "GOOGLE_SEARCH_CONSOLE_SITE_URL"],
     setup_url: "https://console.cloud.google.com/apis/credentials",
     scopes: "https://www.googleapis.com/auth/webmasters.readonly",
     purpose: "Interroge la liste des sites autorisés; aucune donnée de recherche n’est importée.",
   },
   {
-    id: "meta_page", name: "Meta — Page Facebook", description: "Vérifie le jeton et l’accès en lecture à la Page.",
+    id: "meta_page", name: "Meta — Page Facebook", description: "Relie la Page Facebook de Cabalou pour gérer les publications et les commentaires.",
     required_environment: ["META_PAGE_ID", "META_PAGE_ACCESS_TOKEN"], setup_url: "https://developers.facebook.com/apps/",
     scopes: "Jeton de Page et permissions minimales approuvées par Meta.", purpose: "Aucune publication ni lecture de commentaires n’est effectuée.",
   },
   {
     id: "facebook_groups_manual", name: "Groupes Facebook — traitement manuel",
-    description: "Les demandes sont saisies et traitées par un opérateur; aucune API de groupe n’est configurée.",
+    description: "Les demandes de groupes Facebook sont traitées manuellement.",
     required_environment: [], setup_url: "", scopes: "Respect des règles et autorisations de chaque groupe.",
     purpose: "Aucun scraping, collecte automatisée ou publication dans un groupe.",
   },
   {
-    id: "tiktok_account", name: "TikTok — compte", description: "Vérifie le jeton d’accès au profil TikTok associé.",
+    id: "tiktok_account", name: "TikTok — compte", description: "Relie le compte TikTok de Cabalou.",
     required_environment: ["TIKTOK_ACCESS_TOKEN", "TIKTOK_OPEN_ID"], setup_url: "https://developers.tiktok.com/",
     scopes: "Login Kit et scopes approuvés pour le compte Cabalou.", purpose: "Aucun contenu n’est publié.",
   },
   {
-    id: "tiktok_ads", name: "TikTok Ads — retargeting", description: "Vérifie l’accès à l’annonceur TikTok for Business configuré.",
+    id: "tiktok_ads", name: "TikTok Ads — retargeting", description: "Relie le compte publicitaire TikTok utilisé pour le retargeting.",
     required_environment: ["TIKTOK_ADVERTISER_ID", "TIKTOK_ADS_ACCESS_TOKEN"],
     setup_url: "https://business-api.tiktok.com/portal/",
     scopes: "API for Business approuvée avec accès de lecture à l’annonceur.",
     purpose: "Aucune audience, campagne ou donnée de contact n’est envoyée.",
   },
   {
-    id: "smtp", name: "E-mail — serveur SMTP", description: "Vérifie la connexion TLS et l’authentification, sans envoyer de message.",
+    id: "smtp", name: "E-mail — serveur SMTP", description: "Permet l’envoi des e-mails de Cabalou.",
     required_environment: ["CABALOU_SMTP_HOST", "CABALOU_SMTP_PORT", "CABALOU_SMTP_USERNAME", "CABALOU_SMTP_PASSWORD", "CABALOU_SMTP_FROM"],
     setup_url: "", scopes: "Compte d’envoi dédié, SPF/DKIM/DMARC vérifiés et désabonnement géré.",
     purpose: "Aucun e-mail de test n’est envoyé.",
   },
   {
     id: "cabalou_listings", name: "Cabalou — logements (lecture seule)",
-    description: "Vérifie l’API logements Cabalou et son schéma minimal.",
+    description: "Récupère les informations des logements pour les publications.",
     required_environment: ["CABALOU_LISTINGS_API_URL", "CABALOU_API_TOKEN"], setup_url: "",
     scopes: "Jeton de service en lecture seule limité aux faits publiables sur les logements.",
     purpose: "Lit au maximum une page et ne stocke aucune donnée pendant le test.",
@@ -102,54 +108,61 @@ function configured(id: string) {
   const integration = INTEGRATIONS.find((item) => item.id === id);
   if (!integration) throw new HttpError(400, "Intégration inconnue.");
   const missing = integration.required_environment.filter((key) => !process.env[key]?.trim());
-  if (missing.length) throw new HttpError(400, `Paramètres manquants : ${missing.join(", ")}`);
+  if (missing.length) throw new HttpError(400, "Cette intégration n’est pas encore configurée. Contactez un administrateur.");
   return integration;
 }
 
 type MetaRequestContext = "page-read" | "comment-read" | "comment-write" | "page-write" | "reaction-read" | "insights";
 
 function metaFailureMessage(code: number | undefined, url: string, method?: string, context?: MetaRequestContext): string {
-  if (code === 190) return "Meta a rejeté le jeton d’accès. Vérifiez qu’il est valide et associé à la Page configurée.";
+  if (code === 190) return "La connexion Facebook n’est plus valide. Contactez un administrateur pour la rétablir.";
   if ((context === "insights" || new URL(url).pathname.includes("/insights")) && (code === 10 || code === 200)) {
-    return "Les vues nécessitent l’autorisation read_insights et la tâche ANALYZE sur la Page.";
+    return "Les statistiques de vues ne sont pas disponibles pour le moment.";
   }
   if ((context === "comment-write" || (/\/comments(?:\/|$)/.test(new URL(url).pathname) && method === "POST")) && (code === 10 || code === 200)) {
-    return "Meta refuse la réponse : accordez pages_manage_engagement à l’application et vérifiez que le compte dispose de la tâche MODERATE sur la Page.";
+    return "Facebook n’a pas pu publier votre réponse. Réessayez ou contactez un administrateur.";
   }
   if (context === "comment-read" && (code === 10 || code === 200)) {
-    return "Meta refuse la lecture des commentaires. Accordez pages_read_user_content ou activez Page Public Content Access.";
+    return "Impossible de charger les commentaires Facebook. Réessayez ou contactez un administrateur.";
   }
   if (context === "reaction-read" && (code === 10 || code === 200)) {
-    return "Meta refuse cette requête de réactions. Vérifiez pages_read_engagement et l’accès à la Page. Même avec ces droits, l’API ne révèle pas l’identité des autres personnes ayant réagi à une publication.";
+    return "Les réactions de cette publication ne sont pas disponibles pour le moment.";
   }
   if ((context === "page-write" || method !== "GET") && (code === 10 || code === 200)) {
-    return "Meta refuse cette modification. Vérifiez pages_manage_posts, la tâche CREATE_CONTENT et les droits associés à la Page.";
+    return "Facebook n’a pas pu modifier cette publication. Réessayez ou contactez un administrateur.";
   }
   if (code === 10 || code === 200) {
-    return "Meta refuse la lecture des commentaires. Accordez pages_read_user_content ou activez la fonctionnalité Page Public Content Access, puis vérifiez l’accès à la Page.";
+    return "Facebook n’a pas pu fournir ces données. Contactez un administrateur.";
   }
-  return `Meta a refusé la requête${code ? ` (code ${code})` : ""}. Vérifiez les permissions et l’accès à la Page.`;
+  return "Facebook n’a pas pu traiter la demande. Réessayez ou contactez un administrateur.";
 }
 
-async function requestJson(url: string, init?: RequestInit, provider?: "Meta" | "Groq" | "OpenAI" | "DeepSeek", metaContext?: MetaRequestContext, timeoutMs = TIMEOUT_MS): Promise<Record<string, unknown>> {
+async function requestJson(
+  url: string,
+  init?: RequestInit,
+  provider?: "Meta" | "Groq" | "OpenAI" | "DeepSeek",
+  metaContext?: MetaRequestContext,
+  timeoutMs = TIMEOUT_MS,
+  maxResponseBytes = 1_000_000,
+): Promise<Record<string, unknown>> {
   let response: Response;
   try {
     response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs), headers: {
       Accept: "application/json", ...init?.headers,
     } });
   } catch {
-    throw new HttpError(400, "Le fournisseur est injoignable. Vérifiez le réseau et sa disponibilité.");
+    throw new HttpError(400, "Le service n’est pas joignable pour le moment. Réessayez plus tard.");
   }
   let text: string;
-  try { text = await boundedResponseText(response); }
+  try { text = await boundedResponseText(response, maxResponseBytes); }
   catch (error) {
     if (error instanceof HttpError) throw error;
-    throw new HttpError(400, "Le fournisseur a retourné une réponse incomplète.");
+    throw new HttpError(400, "Le service n’a pas répondu correctement. Réessayez plus tard.");
   }
   let payload: unknown;
-  try { payload = JSON.parse(text); } catch { throw new HttpError(400, "Le fournisseur a retourné une réponse invalide."); }
+  try { payload = JSON.parse(text); } catch { throw new HttpError(400, "Le service n’a pas répondu correctement. Réessayez plus tard."); }
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    throw new HttpError(400, "Le fournisseur a retourné une réponse invalide.");
+    throw new HttpError(400, "Le service n’a pas répondu correctement. Réessayez plus tard.");
   }
   if (!response.ok) {
     if (provider === "Meta") {
@@ -158,23 +171,23 @@ async function requestJson(url: string, init?: RequestInit, provider?: "Meta" | 
       throw new HttpError(400, metaFailureMessage(Number.isFinite(code) ? code : undefined, url, init?.method, metaContext));
     }
     if (provider === "Groq" && response.status === 429) {
-      throw new HttpError(429, "La limite gratuite Groq est atteinte ou temporairement saturée. Consultez les limites du compte Groq puis réessayez après réinitialisation.");
+      throw new HttpError(429, "Le service de rédaction est momentanément saturé. Réessayez plus tard.");
     }
     if (provider === "OpenAI" && response.status === 429) {
       const error = (payload as Record<string, unknown>).error;
       if (object(error).code === "insufficient_quota") {
-        throw new HttpError(402, "Le projet OpenAI n’a plus de crédits API. L’abonnement ChatGPT est distinct de la facturation API.");
+        throw new HttpError(402, "Le service de rédaction est indisponible pour le moment. Contactez un administrateur.");
       }
     }
     if (provider === "DeepSeek" && response.status === 429) {
-      throw new HttpError(429, "La limite de requêtes DeepSeek est atteinte ou temporairement saturée.");
+      throw new HttpError(429, "Le service de rédaction est momentanément saturé. Réessayez plus tard.");
     }
-    throw new HttpError(400, `Le fournisseur a refusé la vérification (HTTP ${response.status}). Vérifiez les droits et identifiants.`);
+    throw new HttpError(400, "La connexion au service a échoué. Vérifiez l’intégration ou contactez un administrateur.");
   }
   return payload as Record<string, unknown>;
 }
 
-async function boundedResponseText(response: Response): Promise<string> {
+async function boundedResponseText(response: Response, maxBytes: number): Promise<string> {
   const reader = response.body?.getReader();
   if (!reader) return "";
   const chunks: Uint8Array[] = [];
@@ -184,9 +197,9 @@ async function boundedResponseText(response: Response): Promise<string> {
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > 1_000_000) {
+      if (total > maxBytes) {
         await reader.cancel();
-        throw new HttpError(400, "La réponse du fournisseur est trop volumineuse.");
+        throw new HttpError(400, "Les données reçues sont trop volumineuses. Réessayez avec une période plus courte.");
       }
       chunks.push(value);
     }
@@ -203,7 +216,7 @@ function apiSuccess(payload: Record<string, unknown>, provider: string, url?: st
       const code = Number(object(payload.error).code);
       throw new HttpError(400, metaFailureMessage(Number.isFinite(code) ? code : undefined, url, method, metaContext));
     }
-    throw new HttpError(400, `${provider} a refusé l’accès. Vérifiez les permissions et la configuration.`);
+    throw new HttpError(400, "La connexion au service a échoué. Vérifiez l’intégration ou contactez un administrateur.");
   }
 }
 
@@ -438,7 +451,31 @@ export async function getMetaPostVideo(videoId: string, range?: string) {
   };
 }
 
-async function checkGoogle() {
+export function validateGoogleSearchConsoleDateRange(start: unknown, end: unknown) {
+  const parseDate = (value: unknown) => {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      throw new HttpError(400, "Les dates Search Console doivent être au format AAAA-MM-JJ.");
+    }
+    const timestamp = Date.parse(`${value}T00:00:00.000Z`);
+    if (!Number.isFinite(timestamp) || new Date(timestamp).toISOString().slice(0, 10) !== value) {
+      throw new HttpError(400, "Une date Search Console est invalide.");
+    }
+    return timestamp;
+  };
+  const startTimestamp = parseDate(start);
+  const endTimestamp = parseDate(end);
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  if (startTimestamp > endTimestamp) throw new HttpError(400, "La date de début doit précéder la date de fin.");
+  if (endTimestamp > today.getTime()) throw new HttpError(400, "La date de fin ne peut pas être future.");
+  if ((endTimestamp - startTimestamp) / 86_400_000 + 1 > GOOGLE_SEARCH_CONSOLE_MAX_RANGE_DAYS) {
+    throw new HttpError(400, "Choisissez une période de 90 jours maximum pour limiter le volume de données.");
+  }
+  return { startDate: String(start), endDate: String(end) };
+}
+
+async function googleAccessToken() {
+  configured("google_search_console");
   const token = await requestJson("https://oauth2.googleapis.com/token", {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -450,10 +487,15 @@ async function checkGoogle() {
     }),
   });
   if (!token.access_token || typeof token.access_token !== "string") {
-    throw new HttpError(400, "Google OAuth n’a pas délivré de jeton d’accès.");
+    throw new HttpError(400, "La connexion à Google Search Console a échoué. Vérifiez l’intégration ou contactez un administrateur.");
   }
+  return token.access_token;
+}
+
+async function checkGoogle() {
+  const accessToken = await googleAccessToken();
   const sites = await requestJson(`${GOOGLE_SEARCH_CONSOLE}/sites`, {
-    headers: { Authorization: `Bearer ${token.access_token}` },
+    headers: { Authorization: `Bearer ${accessToken}` },
   });
   apiSuccess(sites, "Google Search Console");
   const entries = sites.siteEntry;
@@ -461,7 +503,92 @@ async function checkGoogle() {
   if (!entries.some((entry) => entry && typeof entry === "object" && (entry as Record<string, unknown>).siteUrl === process.env.GOOGLE_SEARCH_CONSOLE_SITE_URL)) {
     throw new HttpError(400, "La propriété Search Console configurée n’est pas accessible à ce compte.");
   }
-  return "Connexion Google OAuth valide; propriété Search Console accessible en lecture.";
+  return "Google Search Console est connecté.";
+}
+
+function googleSearchConsoleRow(value: unknown, dimensions: string[]): SeoSearchConsoleMetric {
+  const row = object(value);
+  const keys = row.keys;
+  if (!Array.isArray(keys) || keys.length !== dimensions.length) {
+    throw new HttpError(400, "Google Search Console a retourné des dimensions invalides.");
+  }
+  const values = Object.fromEntries(dimensions.map((dimension, index) => [dimension, keys[index]]));
+  const metricDate = string(values.date);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(metricDate)) {
+    throw new HttpError(400, "Google Search Console a retourné une date invalide.");
+  }
+  const clicks = row.clicks;
+  const impressions = row.impressions;
+  const ctr = row.ctr;
+  const averagePosition = row.position;
+  if (typeof clicks !== "number" || !Number.isSafeInteger(clicks) || clicks < 0
+    || typeof impressions !== "number" || !Number.isSafeInteger(impressions) || impressions < 0
+    || typeof ctr !== "number" || !Number.isFinite(ctr) || ctr < 0 || ctr > 1
+    || typeof averagePosition !== "number" || !Number.isFinite(averagePosition) || averagePosition < 0) {
+    throw new HttpError(400, "Google Search Console a retourné des métriques invalides.");
+  }
+  const dimension = (key: string, max: number) => {
+    const result = values[key];
+    if (result === undefined) return "";
+    if (typeof result !== "string" || result.length > max) {
+      throw new HttpError(400, "Google Search Console a retourné une dimension invalide.");
+    }
+    return result;
+  };
+  return {
+    metric_date: metricDate,
+    query_text: dimension("query", 1_000),
+    page_url: dimension("page", 2_000),
+    country: dimension("country", 3),
+    device: dimension("device", 16),
+    clicks,
+    impressions,
+    ctr,
+    average_position: averagePosition,
+  };
+}
+
+async function searchConsoleAnalyticsRows(
+  accessToken: string,
+  startDate: string,
+  endDate: string,
+  dimensions: string[],
+): Promise<SeoSearchConsoleMetric[]> {
+  const siteUrl = process.env.GOOGLE_SEARCH_CONSOLE_SITE_URL!.trim();
+  const url = `${GOOGLE_SEARCH_CONSOLE}/sites/${encodeURIComponent(siteUrl)}/searchAnalytics/query`;
+  const results: SeoSearchConsoleMetric[] = [];
+  let startRow = 0;
+  while (true) {
+    const rowLimit = Math.min(GOOGLE_SEARCH_CONSOLE_PAGE_SIZE, GOOGLE_SEARCH_CONSOLE_MAX_ROWS - startRow + 1);
+    const payload = await requestJson(url, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ startDate, endDate, dimensions, searchType: "web", rowLimit, startRow }),
+    }, undefined, undefined, TIMEOUT_MS, GOOGLE_SEARCH_CONSOLE_MAX_RESPONSE_BYTES);
+    apiSuccess(payload, "Google Search Console");
+    const rows = payload.rows ?? [];
+    if (!Array.isArray(rows)) throw new HttpError(400, "Google Search Console a retourné une liste de résultats invalide.");
+    if (rows.length > GOOGLE_SEARCH_CONSOLE_MAX_ROWS - startRow) {
+      throw new HttpError(400, "Cette période contient trop de résultats. Réduis la période puis relance la synchronisation.");
+    }
+    results.push(...rows.map((row) => googleSearchConsoleRow(row, dimensions)));
+    if (rows.length < rowLimit) break;
+    startRow += rows.length;
+  }
+  return results;
+}
+
+export async function fetchGoogleSearchConsoleMetrics(startDate: string, endDate: string) {
+  const range = validateGoogleSearchConsoleDateRange(startDate, endDate);
+  const accessToken = await googleAccessToken();
+  const [metrics, dailyMetrics] = await Promise.all([
+    searchConsoleAnalyticsRows(accessToken, range.startDate, range.endDate, ["date", "query", "page", "country", "device"]),
+    searchConsoleAnalyticsRows(accessToken, range.startDate, range.endDate, ["date"]),
+  ]);
+  return { metrics, dailyMetrics };
 }
 
 async function checkProvider(id: string): Promise<string> {
@@ -508,8 +635,8 @@ async function checkProvider(id: string): Promise<string> {
     apiSuccess(profile, "TikTok");
     const data = profile.data as Record<string, unknown> | undefined;
     const user = data?.user as Record<string, unknown> | undefined;
-    if (user?.open_id !== process.env.TIKTOK_OPEN_ID) throw new HttpError(400, "Le jeton TikTok ne correspond pas au compte configuré.");
-    return "Jeton TikTok valide; compte associé accessible.";
+    if (user?.open_id !== process.env.TIKTOK_OPEN_ID) throw new HttpError(400, "Le compte TikTok connecté ne correspond pas au compte Cabalou.");
+    return "Le compte TikTok est connecté.";
   }
   if (id === "tiktok_ads") {
     const advertiserId = process.env.TIKTOK_ADVERTISER_ID!;
@@ -539,7 +666,7 @@ async function checkProvider(id: string): Promise<string> {
     try { await transport.verify(); }
     catch { throw new HttpError(400, "La connexion SMTP sécurisée a échoué. Vérifiez l’hôte, le port et TLS."); }
     finally { transport.close(); }
-    return "Connexion SMTP/TLS et authentification valides; aucun message envoyé.";
+    return "Le service e-mail est connecté.";
   }
   if (id === "cabalou_listings") {
     const endpoint = process.env.CABALOU_LISTINGS_API_URL!;
@@ -674,10 +801,13 @@ async function fetchMetaPostViews(postId: string) {
   }
 }
 
-export async function listMetaPageComments(after?: string) {
+export async function listMetaPageComments(after?: string, refreshOnly = false) {
   const token = metaPageToken();
   const pageId = process.env.META_PAGE_ID!;
-  const fields = "id,message,created_time,permalink_url,full_picture,attachments{id,media_type,type,target{id},media{image{src}},subattachments{data{id,media_type,type,target{id},media{image{src}}}}},reactions.limit(0).summary(true),comments.limit(0).summary(true),shares";
+  const commentsField = refreshOnly
+    ? "comments.limit(20).summary(true){id,message,created_time,from{id,name},comment_count,comments.limit(10){id,message,created_time,from{id,name}}}"
+    : "comments.limit(0).summary(true)";
+  const fields = `id,message,created_time,permalink_url,full_picture,attachments{id,media_type,type,target{id},media{image{src}},subattachments{data{id,media_type,type,target{id},media{image{src}}}}},reactions.limit(0).summary(true),${commentsField},shares`;
   const query = new URLSearchParams({ fields, limit: "15" });
   if (after) query.set("after", validMetaCursor(after));
   const url = `https://graph.facebook.com/${META_VERSION}/${encodeURIComponent(pageId)}/posts?${query}`;
@@ -693,10 +823,22 @@ export async function listMetaPageComments(after?: string) {
       const post = object(value);
       const id = string(post.id);
       if (!id) return null;
-      const [commentPage, insights] = await Promise.all([
-        fetchMetaPostComments(id),
-        fetchMetaPostViews(id),
-      ]);
+      let commentPage: Awaited<ReturnType<typeof fetchMetaPostComments>>;
+      let insights: Awaited<ReturnType<typeof fetchMetaPostViews>> | null = null;
+      if (refreshOnly) {
+        const commentData = object(post.comments);
+        commentPage = {
+          comments: graphComments(commentData).map(metaComment).filter((comment) => comment.id)
+            .sort((a, b) => Date.parse(b.created_time) - Date.parse(a.created_time)),
+          comments_after: graphCursor(commentData),
+          comments_has_more: Boolean(object(commentData.paging).next),
+        };
+      } else {
+        [commentPage, insights] = await Promise.all([
+          fetchMetaPostComments(id),
+          fetchMetaPostViews(id),
+        ]);
+      }
       const attachment = (Array.isArray(object(post.attachments).data)
         ? object(post.attachments).data as unknown[]
         : []).map(object)[0] ?? {};
@@ -715,7 +857,7 @@ export async function listMetaPageComments(after?: string) {
         reactions_count: summaryCount(post.reactions),
         comments_count: summaryCount(post.comments),
         shares_count: Number(object(post.shares).count) || 0,
-        ...insights,
+        ...(insights ?? {}),
         ...commentPage,
       };
     }))).filter((post): post is NonNullable<typeof post> => post !== null)
@@ -727,6 +869,63 @@ export async function listMetaPageComments(after?: string) {
     posts_has_more: Boolean(object(result.paging).next),
     fetched_at: new Date().toISOString(),
   };
+}
+
+function scheduledPublishTimeIso(value: unknown): string | null {
+  const timestamp = typeof value === "number"
+    ? new Date(value * 1000)
+    : typeof value === "string" && /^\d+$/u.test(value)
+      ? new Date(Number(value) * 1000)
+      : typeof value === "string"
+        ? new Date(value)
+        : null;
+  return timestamp && Number.isFinite(timestamp.getTime()) ? timestamp.toISOString() : null;
+}
+
+export async function listMetaScheduledPagePosts() {
+  const token = metaPageToken();
+  const pageId = process.env.META_PAGE_ID!;
+  const fields = "id,message,is_published,scheduled_publish_time,permalink_url,full_picture";
+  const posts: {
+    id: string;
+    message: string;
+    scheduled_publish_time: string;
+    permalink_url: string;
+    picture: string;
+  }[] = [];
+  const seenCursors = new Set<string>();
+  let after = "";
+  while (true) {
+    const query = new URLSearchParams({ fields, limit: "100" });
+    if (after) query.set("after", after);
+    const url = `https://graph.facebook.com/${META_VERSION}/${encodeURIComponent(pageId)}/scheduled_posts?${query}`;
+    const result = await requestJson(
+      url,
+      { headers: { Authorization: `Bearer ${token}` } },
+      "Meta",
+      "page-read",
+    );
+    apiSuccess(result, "Meta", url, undefined, "page-read");
+    if (Array.isArray(result.data)) {
+      posts.push(...result.data.map(object).flatMap((post) => {
+      const scheduledTime = scheduledPublishTimeIso(post.scheduled_publish_time);
+      if (post.is_published === true || !scheduledTime || !string(post.id)) return [];
+      return [{
+        id: string(post.id),
+        message: string(post.message),
+        scheduled_publish_time: scheduledTime,
+        permalink_url: string(post.permalink_url),
+        picture: string(post.full_picture),
+      }];
+    }));
+    }
+    const nextCursor = graphCursor(result);
+    if (!nextCursor || seenCursors.has(nextCursor)) break;
+    seenCursors.add(nextCursor);
+    after = nextCursor;
+  }
+  posts.sort((a, b) => Date.parse(a.scheduled_publish_time) - Date.parse(b.scheduled_publish_time));
+  return { posts, fetched_at: new Date().toISOString() };
 }
 
 export async function listMetaPostComments(postId: string, after?: string) {
@@ -778,32 +977,60 @@ export async function listOlderMetaPostComments(postId: string, after: string) {
   return fetchMetaPostComments(postId, after);
 }
 
-export async function publishMetaPagePost(value: unknown) {
+function validateMetaScheduledPublishTime(scheduledAt?: unknown): number | null {
+  if (scheduledAt !== undefined && scheduledAt !== null && scheduledAt !== "") {
+    if (typeof scheduledAt !== "string") throw new HttpError(400, "La date de programmation est invalide.");
+    const scheduledAtMs = Date.parse(scheduledAt);
+    const leadTimeMs = scheduledAtMs - Date.now();
+    if (!Number.isFinite(scheduledAtMs) || leadTimeMs < META_SCHEDULE_MIN_LEAD_TIME_MS
+      || leadTimeMs > META_SCHEDULE_MAX_LEAD_TIME_MS) {
+      throw new HttpError(400, "Choisis un horaire compris entre 10 minutes et 30 jours à partir de maintenant.");
+    }
+    return Math.floor(scheduledAtMs / 1000);
+  }
+  return null;
+}
+
+export async function publishMetaPagePost(value: unknown, scheduledAt?: unknown) {
   const message = cleanText(value, "publication", 5000);
+  const scheduledPublishTime = validateMetaScheduledPublishTime(scheduledAt);
   const pageId = process.env.META_PAGE_ID!;
   const url = `https://graph.facebook.com/${META_VERSION}/${encodeURIComponent(pageId)}/feed`;
+  const form = new URLSearchParams({ message });
+  if (scheduledPublishTime !== null) {
+    form.set("published", "false");
+    form.set("scheduled_publish_time", String(scheduledPublishTime));
+  }
   const result = await requestJson(url, {
     method: "POST",
     headers: {
       Authorization: ["Bearer", metaPageToken()].join(" "),
       "Content-Type": "application/x-www-form-urlencoded",
     },
-    body: new URLSearchParams({ message }),
+    body: form,
   }, "Meta", "page-write");
   apiSuccess(result, "Meta", url, "POST", "page-write");
   if (!string(result.id)) throw new HttpError(400, "Meta n’a pas confirmé la publication.");
-  return { id: string(result.id) };
+  return scheduledPublishTime === null
+    ? { id: string(result.id) }
+    : { id: string(result.id), scheduled_publish_time: new Date(scheduledPublishTime * 1000).toISOString() };
 }
 
 type MetaPageMedia = { name: string; type: string; bytes: Uint8Array };
 
-async function uploadUnpublishedMetaPhoto(pageId: string, media: MetaPageMedia, token: string): Promise<string> {
+async function uploadUnpublishedMetaPhoto(
+  pageId: string,
+  media: MetaPageMedia,
+  token: string,
+  scheduledPublishTime: number | null,
+): Promise<string> {
   const url = `https://graph.facebook.com/${META_VERSION}/${encodeURIComponent(pageId)}/photos`;
   const form = new FormData();
   const blobBuffer = new ArrayBuffer(media.bytes.byteLength);
   new Uint8Array(blobBuffer).set(media.bytes);
   form.append("source", new Blob([blobBuffer], { type: media.type }), media.name);
   form.append("published", "false");
+  if (scheduledPublishTime !== null) form.append("temporary", "true");
   const result = await requestJson(url, {
     method: "POST",
     headers: { Authorization: ["Bearer", token].join(" ") },
@@ -815,17 +1042,28 @@ async function uploadUnpublishedMetaPhoto(pageId: string, media: MetaPageMedia, 
   return id;
 }
 
-async function publishMetaPhotoAlbum(message: string, media: MetaPageMedia[], pageId: string, token: string) {
+async function publishMetaPhotoAlbum(
+  message: string,
+  media: MetaPageMedia[],
+  pageId: string,
+  token: string,
+  scheduledPublishTime: number | null = null,
+) {
   if (media.length > META_PAGE_ALBUM_MAX_PHOTOS) {
     throw new HttpError(400, `Une publication peut contenir jusqu’à ${META_PAGE_ALBUM_MAX_PHOTOS} photos.`);
   }
   const photoIds: string[] = [];
-  for (const photo of media) photoIds.push(await uploadUnpublishedMetaPhoto(pageId, photo, token));
+  for (const photo of media) photoIds.push(await uploadUnpublishedMetaPhoto(pageId, photo, token, scheduledPublishTime));
 
   const url = `https://graph.facebook.com/${META_VERSION}/${encodeURIComponent(pageId)}/feed`;
   const form = new FormData();
   if (message) form.append("message", message);
   photoIds.forEach((id, index) => form.append(`attached_media[${index}]`, JSON.stringify({ media_fbid: id })));
+  if (scheduledPublishTime !== null) {
+    form.append("published", "false");
+    form.append("scheduled_publish_time", String(scheduledPublishTime));
+    form.append("unpublished_content_type", "SCHEDULED");
+  }
   const result = await requestJson(url, {
     method: "POST",
     headers: { Authorization: ["Bearer", token].join(" ") },
@@ -834,7 +1072,9 @@ async function publishMetaPhotoAlbum(message: string, media: MetaPageMedia[], pa
   apiSuccess(result, "Meta", url, "POST", "page-write");
   const id = string(result.id);
   if (!id) throw new HttpError(400, "Meta n’a pas confirmé la publication de l’album.");
-  return { id };
+  return scheduledPublishTime === null
+    ? { id }
+    : { id, scheduled_publish_time: new Date(scheduledPublishTime * 1000).toISOString() };
 }
 
 export async function replaceMetaPagePostPhotos(postId: string, value: unknown, removedIds: unknown) {
@@ -878,9 +1118,14 @@ export async function replaceMetaPagePostPhotos(postId: string, value: unknown, 
   return { id: replacement.id, replaced_id: postId };
 }
 
-export async function publishMetaPageMedia(value: unknown, selectedMedia: MetaPageMedia | MetaPageMedia[]) {
+export async function publishMetaPageMedia(
+  value: unknown,
+  selectedMedia: MetaPageMedia | MetaPageMedia[],
+  scheduledAt?: unknown,
+) {
   const message = cleanText(value ?? "", "publication", 5000, false);
   const media = Array.isArray(selectedMedia) ? selectedMedia : [selectedMedia];
+  const scheduledPublishTime = validateMetaScheduledPublishTime(scheduledAt);
   if (!media.length) throw new HttpError(400, "Ajoutez des photos ou une vidéo à la publication.");
   if (media.length > META_PAGE_ALBUM_MAX_PHOTOS) {
     throw new HttpError(400, `Une publication peut contenir jusqu’à ${META_PAGE_ALBUM_MAX_PHOTOS} photos.`);
@@ -902,7 +1147,9 @@ export async function publishMetaPageMedia(value: unknown, selectedMedia: MetaPa
 
   const pageId = process.env.META_PAGE_ID!;
   const token = metaPageToken();
-  if (allImages && media.length > 1) return publishMetaPhotoAlbum(message, media, pageId, token);
+  if (allImages && (media.length > 1 || scheduledPublishTime !== null)) {
+    return publishMetaPhotoAlbum(message, media, pageId, token, scheduledPublishTime);
+  }
 
   const file = media[0];
   const fileIsImage = file.type === "image/jpeg" || file.type === "image/png";
@@ -914,7 +1161,10 @@ export async function publishMetaPageMedia(value: unknown, selectedMedia: MetaPa
   new Uint8Array(blobBuffer).set(file.bytes);
   form.append("source", new Blob([blobBuffer], { type: file.type }), file.name);
   form.append(fileIsImage ? "caption" : "description", message);
-  form.append("published", "true");
+  form.append("published", scheduledPublishTime === null ? "true" : "false");
+  if (scheduledPublishTime !== null) {
+    form.append("scheduled_publish_time", String(scheduledPublishTime));
+  }
   const result = await requestJson(url, {
     method: "POST",
     headers: { Authorization: ["Bearer", token].join(" ") },
@@ -923,7 +1173,9 @@ export async function publishMetaPageMedia(value: unknown, selectedMedia: MetaPa
   apiSuccess(result, "Meta", url, "POST", "page-write");
   const id = string(result.post_id) || string(result.id);
   if (!id) throw new HttpError(400, "Meta n’a pas confirmé la publication du média.");
-  return { id };
+  return scheduledPublishTime === null
+    ? { id }
+    : { id, scheduled_publish_time: new Date(scheduledPublishTime * 1000).toISOString() };
 }
 
 export async function editMetaPagePost(postId: string, value: unknown) {

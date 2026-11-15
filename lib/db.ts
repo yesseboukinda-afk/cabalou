@@ -188,6 +188,20 @@ export async function initializeDatabase(): Promise<void> {
         ctr REAL NOT NULL, average_position REAL NOT NULL, source TEXT NOT NULL DEFAULT 'manual',
         UNIQUE(metric_date, query_text, page_path)
       );
+      CREATE TABLE IF NOT EXISTS seo_search_console_metrics (
+        id INTEGER PRIMARY KEY, metric_date TEXT NOT NULL, query_text TEXT NOT NULL,
+        page_url TEXT NOT NULL, country TEXT NOT NULL, device TEXT NOT NULL,
+        clicks INTEGER NOT NULL, impressions INTEGER NOT NULL, ctr REAL NOT NULL,
+        average_position REAL NOT NULL,
+        UNIQUE(metric_date, query_text, page_url, country, device)
+      );
+      CREATE INDEX IF NOT EXISTS seo_search_console_metrics_date
+        ON seo_search_console_metrics(metric_date);
+      CREATE TABLE IF NOT EXISTS seo_search_console_syncs (
+        id INTEGER PRIMARY KEY, start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+        rows_synced INTEGER NOT NULL, synced_at TEXT NOT NULL,
+        actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL
+      );
       CREATE TABLE IF NOT EXISTS audit_events (
         id INTEGER PRIMARY KEY, actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
         action TEXT NOT NULL, resource_type TEXT NOT NULL, resource_id TEXT,

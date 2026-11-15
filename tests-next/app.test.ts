@@ -861,6 +861,49 @@ describe("publication de médias Meta", () => {
     }
   });
 
+  it("programme un album photo avec des téléversements temporaires et les paramètres Meta requis", async () => {
+    const originalPageId = process.env.META_PAGE_ID;
+    const originalPageToken = process.env.META_PAGE_ACCESS_TOKEN;
+    const originalFetchForTest = globalThis.fetch;
+    const graphRequests: Array<{ url: string; init?: RequestInit }> = [];
+    process.env.META_PAGE_ID = "123456";
+    process.env.META_PAGE_ACCESS_TOKEN = "test-page-token";
+    globalThis.fetch = (async (input, init) => {
+      const requestUrl = String(input);
+      graphRequests.push({ url: requestUrl, init });
+      if (requestUrl.endsWith("/photos")) return Response.json({ id: `scheduled-photo-${graphRequests.length}` });
+      return Response.json({ id: "scheduled-album-123" });
+    }) as typeof fetch;
+    try {
+      const scheduledAt = new Date(Date.now() + 10 * 60_000 + 5_000).toISOString();
+      const { publishMetaPageMedia } = await import("../lib/integrations");
+      assert.deepEqual(await publishMetaPageMedia("Album programmé", [
+        { name: "un.jpg", type: "image/jpeg", bytes: new Uint8Array([0xff, 0xd8, 0xff]) },
+        { name: "deux.png", type: "image/png", bytes: new Uint8Array([0x89, 0x50, 0x4e, 0x47]) },
+      ], scheduledAt), {
+        id: "scheduled-album-123",
+        scheduled_publish_time: new Date(Math.floor(Date.parse(scheduledAt) / 1000) * 1000).toISOString(),
+      });
+      for (const upload of graphRequests.slice(0, 2)) {
+        const form = upload.init?.body as FormData;
+        assert.equal(form.get("published"), "false");
+        assert.equal(form.get("temporary"), "true");
+      }
+      const scheduledPost = graphRequests[2].init?.body as FormData;
+      assert.equal(scheduledPost.get("published"), "false");
+      assert.equal(scheduledPost.get("scheduled_publish_time"), String(Math.floor(Date.parse(scheduledAt) / 1000)));
+      assert.equal(scheduledPost.get("unpublished_content_type"), "SCHEDULED");
+      assert.deepEqual(JSON.parse(String(scheduledPost.get("attached_media[0]"))), { media_fbid: "scheduled-photo-1" });
+      assert.deepEqual(JSON.parse(String(scheduledPost.get("attached_media[1]"))), { media_fbid: "scheduled-photo-2" });
+    } finally {
+      globalThis.fetch = originalFetchForTest;
+      if (originalPageId === undefined) delete process.env.META_PAGE_ID;
+      else process.env.META_PAGE_ID = originalPageId;
+      if (originalPageToken === undefined) delete process.env.META_PAGE_ACCESS_TOKEN;
+      else process.env.META_PAGE_ACCESS_TOKEN = originalPageToken;
+    }
+  });
+
   it("refuse de mélanger photos et vidéo dans une publication", async () => {
     const originalPageId = process.env.META_PAGE_ID;
     const originalPageToken = process.env.META_PAGE_ACCESS_TOKEN;
@@ -935,6 +978,210 @@ describe("publication de médias Meta", () => {
       assert.equal(form.get("description"), "Une vidéo");
       assert.equal(form.get("published"), "true");
       assert.equal((form.get("source") as File).name, "video.mp4");
+    } finally {
+      globalThis.fetch = originalFetchForTest;
+      if (originalPageId === undefined) delete process.env.META_PAGE_ID;
+      else process.env.META_PAGE_ID = originalPageId;
+      if (originalPageToken === undefined) delete process.env.META_PAGE_ACCESS_TOKEN;
+      else process.env.META_PAGE_ACCESS_TOKEN = originalPageToken;
+    }
+  });
+
+  it("programme une vidéo MP4 avec les paramètres de publication différée de Meta", async () => {
+    const originalPageId = process.env.META_PAGE_ID;
+    const originalPageToken = process.env.META_PAGE_ACCESS_TOKEN;
+    const originalFetchForTest = globalThis.fetch;
+    let requestUrl = "";
+    let requestInit: RequestInit | undefined;
+    process.env.META_PAGE_ID = "123456";
+    process.env.META_PAGE_ACCESS_TOKEN = "test-page-token";
+    globalThis.fetch = (async (input, init) => {
+      requestUrl = String(input);
+      requestInit = init;
+      return Response.json({ id: "scheduled-video-123" });
+    }) as typeof fetch;
+    try {
+      const scheduledAt = new Date(Date.now() + 10 * 60_000 + 5_000).toISOString();
+      const { publishMetaPageMedia } = await import("../lib/integrations");
+      assert.deepEqual(await publishMetaPageMedia("Vidéo programmée", {
+        name: "video.mp4", type: "video/mp4", bytes: new Uint8Array([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70]),
+      }, scheduledAt), {
+        id: "scheduled-video-123",
+        scheduled_publish_time: new Date(Math.floor(Date.parse(scheduledAt) / 1000) * 1000).toISOString(),
+      });
+      assert.equal(requestUrl, "https://graph-video.facebook.com/v27.0/123456/videos");
+      const form = requestInit?.body as FormData;
+      assert.equal(form.get("description"), "Vidéo programmée");
+      assert.equal(form.get("published"), "false");
+      assert.equal(form.get("scheduled_publish_time"), String(Math.floor(Date.parse(scheduledAt) / 1000)));
+    } finally {
+      globalThis.fetch = originalFetchForTest;
+      if (originalPageId === undefined) delete process.env.META_PAGE_ID;
+      else process.env.META_PAGE_ID = originalPageId;
+      if (originalPageToken === undefined) delete process.env.META_PAGE_ACCESS_TOKEN;
+      else process.env.META_PAGE_ACCESS_TOKEN = originalPageToken;
+    }
+  });
+});
+
+describe("actualisation légère des commentaires Meta", () => {
+  it("récupère les publications et commentaires récents sans lancer une requête par publication", async () => {
+    const originalPageId = process.env.META_PAGE_ID;
+    const originalPageToken = process.env.META_PAGE_ACCESS_TOKEN;
+    const originalFetchForTest = globalThis.fetch;
+    const graphRequests: string[] = [];
+    process.env.META_PAGE_ID = "123456";
+    process.env.META_PAGE_ACCESS_TOKEN = "test-page-token";
+    globalThis.fetch = (async (input) => {
+      graphRequests.push(String(input));
+      return Response.json({
+        data: [{
+          id: "123456_post",
+          message: "Publication",
+          created_time: "2026-11-15T05:00:00+0000",
+          comments: {
+            data: [{
+              id: "123456_comment",
+              message: "Nouveau commentaire",
+              created_time: "2026-11-15T06:00:00+0000",
+              from: { id: "789", name: "Client" },
+              comments: { data: [] },
+            }],
+            paging: { cursors: { after: "comment-cursor" }, next: "https://graph.facebook.com/next" },
+            summary: { total_count: 1 },
+          },
+          reactions: { summary: { total_count: 0 } },
+          attachments: { data: [] },
+          shares: { count: 0 },
+        }],
+        paging: { cursors: { after: "post-cursor" }, next: "https://graph.facebook.com/next-posts" },
+      });
+    }) as typeof fetch;
+    try {
+      const { listMetaPageComments } = await import("../lib/integrations");
+      const result = await listMetaPageComments(undefined, true);
+      assert.equal(graphRequests.length, 1);
+      assert.match(graphRequests[0], /comments\.limit%2820%29/u);
+      assert.equal(result.posts[0].comments[0].message, "Nouveau commentaire");
+      assert.equal(result.posts[0].comments_count, 1);
+      assert.equal(result.posts[0].comments_after, "comment-cursor");
+      assert.equal(result.posts[0].comments_has_more, true);
+      assert.equal(result.posts_after, "post-cursor");
+      assert.equal(result.posts_has_more, true);
+    } finally {
+      globalThis.fetch = originalFetchForTest;
+      if (originalPageId === undefined) delete process.env.META_PAGE_ID;
+      else process.env.META_PAGE_ID = originalPageId;
+      if (originalPageToken === undefined) delete process.env.META_PAGE_ACCESS_TOKEN;
+      else process.env.META_PAGE_ACCESS_TOKEN = originalPageToken;
+    }
+  });
+});
+
+describe("publications programmées Meta", () => {
+  it("liste toutes les publications de Page en attente sur plusieurs pages Meta", async () => {
+    const originalPageId = process.env.META_PAGE_ID;
+    const originalPageToken = process.env.META_PAGE_ACCESS_TOKEN;
+    const originalFetchForTest = globalThis.fetch;
+    const scheduledAt = Math.floor((Date.now() + 60 * 60_000) / 1000);
+    const requestUrls: string[] = [];
+    process.env.META_PAGE_ID = "123456";
+    process.env.META_PAGE_ACCESS_TOKEN = "test-page-token";
+    globalThis.fetch = (async (input) => {
+      const requestUrl = String(input);
+      requestUrls.push(requestUrl);
+      if (new URL(requestUrl).searchParams.has("after")) {
+        return Response.json({
+          data: [
+            { id: "scheduled-3", message: "Troisième", is_published: false, scheduled_publish_time: scheduledAt + 300, full_picture: "https://cdn.example/third.jpg" },
+          ],
+        });
+      }
+      return Response.json({
+        data: [
+          { id: "scheduled-2", message: "Deuxième", is_published: false, scheduled_publish_time: scheduledAt + 600 },
+          { id: "published", message: "Déjà publié", is_published: true, scheduled_publish_time: scheduledAt },
+          { id: "without-time", message: "Sans programmation", is_published: false },
+          { id: "scheduled-1", message: "Premier", is_published: false, scheduled_publish_time: String(scheduledAt) },
+        ],
+        paging: { cursors: { after: "cursor-2" } },
+      });
+    }) as typeof fetch;
+    try {
+      const { listMetaScheduledPagePosts } = await import("../lib/integrations");
+      const result = await listMetaScheduledPagePosts();
+      assert.match(requestUrls[0], /\/123456\/scheduled_posts\?/u);
+      assert.equal(new URL(requestUrls[1]).searchParams.get("after"), "cursor-2");
+      assert.deepEqual(result.posts.map((post) => post.id), ["scheduled-1", "scheduled-3", "scheduled-2"]);
+      assert.equal(result.posts[0].scheduled_publish_time, new Date(scheduledAt * 1000).toISOString());
+      assert.equal(result.posts[1].picture, "https://cdn.example/third.jpg");
+    } finally {
+      globalThis.fetch = originalFetchForTest;
+      if (originalPageId === undefined) delete process.env.META_PAGE_ID;
+      else process.env.META_PAGE_ID = originalPageId;
+      if (originalPageToken === undefined) delete process.env.META_PAGE_ACCESS_TOKEN;
+      else process.env.META_PAGE_ACCESS_TOKEN = originalPageToken;
+    }
+  });
+});
+
+describe("programmation Meta", () => {
+  it("programme une publication texte dans la fenêtre autorisée par Meta", async () => {
+    const originalPageId = process.env.META_PAGE_ID;
+    const originalPageToken = process.env.META_PAGE_ACCESS_TOKEN;
+    const originalFetchForTest = globalThis.fetch;
+    let requestUrl = "";
+    let requestBody: URLSearchParams | undefined;
+    process.env.META_PAGE_ID = "123456";
+    process.env.META_PAGE_ACCESS_TOKEN = "test-page-token";
+    globalThis.fetch = (async (input, init) => {
+      requestUrl = String(input);
+      requestBody = init?.body as URLSearchParams;
+      return Response.json({ id: "scheduled-post-123" });
+    }) as typeof fetch;
+    try {
+      const scheduledAt = new Date(Date.now() + 10 * 60_000 + 5_000).toISOString();
+      const { publishMetaPagePost } = await import("../lib/integrations");
+      const result = await publishMetaPagePost("Publication de test programmée", scheduledAt);
+      assert.equal(requestUrl, "https://graph.facebook.com/v27.0/123456/feed");
+      assert.equal(requestBody?.get("message"), "Publication de test programmée");
+      assert.equal(requestBody?.get("published"), "false");
+      assert.equal(Number(requestBody?.get("scheduled_publish_time")), Math.floor(Date.parse(scheduledAt) / 1000));
+      assert.deepEqual(result, {
+        id: "scheduled-post-123",
+        scheduled_publish_time: new Date(Math.floor(Date.parse(scheduledAt) / 1000) * 1000).toISOString(),
+      });
+    } finally {
+      globalThis.fetch = originalFetchForTest;
+      if (originalPageId === undefined) delete process.env.META_PAGE_ID;
+      else process.env.META_PAGE_ID = originalPageId;
+      if (originalPageToken === undefined) delete process.env.META_PAGE_ACCESS_TOKEN;
+      else process.env.META_PAGE_ACCESS_TOKEN = originalPageToken;
+    }
+  });
+
+  it("refuse une date hors de la fenêtre autorisée sans appeler Meta", async () => {
+    const originalPageId = process.env.META_PAGE_ID;
+    const originalPageToken = process.env.META_PAGE_ACCESS_TOKEN;
+    const originalFetchForTest = globalThis.fetch;
+    let requestCount = 0;
+    process.env.META_PAGE_ID = "123456";
+    process.env.META_PAGE_ACCESS_TOKEN = "test-page-token";
+    globalThis.fetch = (async () => {
+      requestCount += 1;
+      return Response.json({ id: "should-not-exist" });
+    }) as typeof fetch;
+    try {
+      const { publishMetaPagePost } = await import("../lib/integrations");
+      await assert.rejects(
+        publishMetaPagePost("Trop tôt", new Date(Date.now() + 9 * 60_000).toISOString()),
+        /entre 10 minutes et 30 jours/u,
+      );
+      await assert.rejects(
+        publishMetaPagePost("Trop loin", new Date(Date.now() + 31 * 24 * 60 * 60_000).toISOString()),
+        /entre 10 minutes et 30 jours/u,
+      );
+      assert.equal(requestCount, 0);
     } finally {
       globalThis.fetch = originalFetchForTest;
       if (originalPageId === undefined) delete process.env.META_PAGE_ID;
@@ -1212,6 +1459,43 @@ describe("migration Next Cabalou", () => {
     assert.equal(await security.authenticate("admin", "incorrect"), null);
   });
 
+  it("masque les détails techniques des intégrations aux utilisateurs non administrateurs", async () => {
+    const viewerLogin = await route.POST(new NextRequest("http://127.0.0.1:3000/api/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", host: "127.0.0.1:3000", origin: "http://127.0.0.1:3000" },
+      body: JSON.stringify({ username: "viewer", password: "Password viewer 123!" }),
+    }));
+    const viewerResponse = await route.GET(new NextRequest("http://127.0.0.1:3000/api/integrations", {
+      headers: { cookie: cookieHeader(viewerLogin) },
+    }));
+    assert.equal(viewerResponse.status, 200);
+    const viewerIntegrations = (await viewerResponse.json() as { integrations: Record<string, unknown>[] }).integrations;
+    const viewerMeta = viewerIntegrations.find((item) => item.id === "meta_page");
+    assert.ok(viewerMeta);
+    assert.equal("required_environment" in viewerMeta, false);
+    assert.equal("missing_environment" in viewerMeta, false);
+    assert.equal("setup_url" in viewerMeta, false);
+    assert.equal("scopes" in viewerMeta, false);
+    assert.equal("purpose" in viewerMeta, false);
+    assert.equal(JSON.stringify(viewerIntegrations).includes("META_PAGE_ACCESS_TOKEN"), false);
+    const viewerCheck = viewerMeta.last_check as Record<string, unknown> | null;
+    assert.equal(viewerCheck?.message, undefined);
+
+    const adminLogin = await route.POST(new NextRequest("http://127.0.0.1:3000/api/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", host: "127.0.0.1:3000", origin: "http://127.0.0.1:3000" },
+      body: JSON.stringify({ username: "admin", password: "Password admin local 123!" }),
+    }));
+    const adminResponse = await route.GET(new NextRequest("http://127.0.0.1:3000/api/integrations", {
+      headers: { cookie: cookieHeader(adminLogin) },
+    }));
+    const adminIntegrations = (await adminResponse.json() as { integrations: Record<string, unknown>[] }).integrations;
+    const adminMeta = adminIntegrations.find((item) => item.id === "meta_page");
+    assert.ok(adminMeta);
+    assert.ok(Array.isArray(adminMeta.required_environment));
+    assert.equal(typeof adminMeta.scopes, "string");
+  });
+
   it("crée les comptes dans Supabase Auth et conserve le nom d’utilisateur", async () => {
     const operatorId = await service.createUser(adminId, {
       username: "short-password", email: "operator@example.test",
@@ -1232,6 +1516,23 @@ describe("migration Next Cabalou", () => {
     await assert.rejects(service.reviewPost(adminId, "admin", post.id, true), /créateur ne peut pas approuver/);
     assert.equal((await service.reviewPost(managerId, "marketing_manager", post.id, true) as { status: string }).status, "approved");
     assert.equal((await service.recordManualPublication(managerId, post.id, "https://facebook.com/cabalou/post") as { status: string }).status, "published_manual");
+  });
+
+  it("supprime les brouillons et refuse de supprimer un contenu soumis", async () => {
+    const draft = await service.savePost(adminId, null, {
+      title: "Brouillon à supprimer", channel: "facebook", body: "Texte de test",
+      destination_url: "https://cabalou.net/",
+    }) as { id: number };
+    assert.deepEqual(await service.deletePost(adminId, draft.id), { id: draft.id });
+    assert.equal(await service.getPost(draft.id), null);
+
+    const pending = await service.savePost(adminId, null, {
+      title: "Contenu en validation", channel: "facebook", body: "Texte de test",
+      destination_url: "https://cabalou.net/",
+    }) as { id: number };
+    await service.submitPost(adminId, pending.id);
+    await assert.rejects(service.deletePost(adminId, pending.id), /Seuls les brouillons ou contenus rejetés/u);
+    assert.equal((await service.getPost(pending.id) as { status: string }).status, "pending");
   });
 
   it("bloque les parcours de réactivation sans base valide et après opposition", async () => {
@@ -1279,6 +1580,178 @@ describe("migration Next Cabalou", () => {
       metric_date: "2025-02-01", query_text: "autre", page_path: "/",
       clicks: 11, impressions: 10, average_position: 4,
     }), /clics ne peuvent pas dépasser/);
+  });
+
+  it("remplace les données Search Console d’une période sans écraser les saisies manuelles", async () => {
+    const startDate = "2025-04-01";
+    const endDate = "2025-04-02";
+    const detail = {
+      metric_date: startDate, query_text: "hotel cabalou", page_url: "https://cabalou.net/",
+      country: "gab", device: "MOBILE", clicks: 4, impressions: 40, ctr: 0.1, average_position: 5.5,
+    };
+    const daily = {
+      metric_date: startDate, query_text: "", page_url: "", country: "", device: "",
+      clicks: 8, impressions: 80, ctr: 0.1, average_position: 6,
+    };
+    await service.saveSeoMetric(adminId, {
+      metric_date: startDate, query_text: "hotel cabalou", page_path: "/",
+      clicks: 1, impressions: 5, average_position: 3,
+    });
+    await service.replaceSearchConsoleMetrics(adminId, startDate, endDate, [detail], [daily]);
+    let report = await service.seoMetrics(startDate, endDate) as {
+      metrics: Record<string, unknown>[];
+      search_console_metrics: Record<string, unknown>[];
+      summary: Record<string, unknown>;
+      latest_sync: Record<string, unknown> | null;
+    };
+    assert.equal(report.metrics[0]?.source, "manual");
+    assert.equal(report.search_console_metrics[0]?.query_text, "hotel cabalou");
+    assert.equal(report.search_console_metrics[0]?.country, "gab");
+    assert.equal(report.search_console_metrics[0]?.device, "MOBILE");
+    assert.equal(report.summary.clicks, 8);
+    assert.equal(report.summary.impressions, 80);
+    assert.equal(typeof report.summary.ctr, "number");
+    assert.equal(report.summary.ctr, 0.1);
+    assert.equal(report.summary.average_position, 6);
+    assert.equal(report.latest_sync?.rows_synced, 1);
+
+    await service.replaceSearchConsoleMetrics(adminId, startDate, endDate, [], []);
+    report = await service.seoMetrics(startDate, endDate) as typeof report;
+    assert.equal(report.search_console_metrics.length, 0);
+    assert.equal(report.summary.clicks, 0);
+    assert.equal(report.metrics[0]?.source, "manual");
+  });
+
+  it("récupère les résultats Search Analytics avec le jeton OAuth en lecture seule", async () => {
+    const envKeys = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN", "GOOGLE_SEARCH_CONSOLE_SITE_URL"];
+    const previousEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+    const previousFetch = globalThis.fetch;
+    const requests: Record<string, unknown>[] = [];
+    for (const [key, value] of Object.entries({
+      GOOGLE_CLIENT_ID: "test-google-client",
+      GOOGLE_CLIENT_SECRET: "test-google-secret",
+      GOOGLE_REFRESH_TOKEN: "test-google-refresh",
+      GOOGLE_SEARCH_CONSOLE_SITE_URL: "sc-domain:cabalou.net",
+    })) process.env[key] = value;
+    globalThis.fetch = (async (input, init) => {
+      const url = String(input);
+      if (url === "https://oauth2.googleapis.com/token") {
+        const form = new URLSearchParams(String(init?.body));
+        assert.equal(form.get("client_id"), "test-google-client");
+        assert.equal(form.get("client_secret"), "test-google-secret");
+        assert.equal(form.get("refresh_token"), "test-google-refresh");
+        return Response.json({ access_token: "test-google-access" });
+      }
+      assert.ok(url.includes("/sites/sc-domain%3Acabalou.net/searchAnalytics/query"));
+      assert.equal(new Headers(init?.headers).get("authorization"), "Bearer test-google-access");
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requests.push(body);
+      if (Array.isArray(body.dimensions) && body.dimensions.length === 1) {
+        return Response.json({ rows: [{
+          keys: ["2025-04-01"], clicks: 8, impressions: 80, ctr: 0.1, position: 6,
+        }] });
+      }
+      return Response.json({ rows: [{
+        keys: ["2025-04-01", "hotel cabalou", "https://cabalou.net/", "gab", "MOBILE"],
+        clicks: 4, impressions: 40, ctr: 0.1, position: 5.5,
+      }] });
+    }) as typeof fetch;
+    try {
+      const integrations = await import("../lib/integrations");
+      const results = await integrations.fetchGoogleSearchConsoleMetrics("2025-04-01", "2025-04-02");
+      assert.equal(results.metrics.length, 1);
+      assert.deepEqual(results.metrics[0], {
+        metric_date: "2025-04-01", query_text: "hotel cabalou", page_url: "https://cabalou.net/",
+        country: "gab", device: "MOBILE", clicks: 4, impressions: 40, ctr: 0.1, average_position: 5.5,
+      });
+      assert.equal(results.dailyMetrics[0]?.query_text, "");
+      assert.equal(results.dailyMetrics[0]?.clicks, 8);
+      assert.equal(requests.length, 2);
+      assert.ok(requests.some((body) => JSON.stringify(body.dimensions) === JSON.stringify(["date", "query", "page", "country", "device"])));
+      assert.ok(requests.every((body) => body.searchType === "web"));
+      assert.throws(
+        () => integrations.validateGoogleSearchConsoleDateRange("2025-01-01", "2025-04-01"),
+        /90 jours maximum/u,
+      );
+    } finally {
+      globalThis.fetch = previousFetch;
+      for (const [key, value] of Object.entries(previousEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
+  it("synchronise Search Console par une route protégée aux responsables", async () => {
+    const adminLogin = await route.POST(new NextRequest("http://127.0.0.1:3000/api/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", host: "127.0.0.1:3000", origin: "http://127.0.0.1:3000" },
+      body: JSON.stringify({ username: "admin", password: "Password admin local 123!" }),
+    }));
+    const adminCsrf = (await adminLogin.json() as { csrf: string }).csrf;
+    const adminCookie = cookieHeader(adminLogin);
+    const viewerLogin = await route.POST(new NextRequest("http://127.0.0.1:3000/api/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", host: "127.0.0.1:3000", origin: "http://127.0.0.1:3000" },
+      body: JSON.stringify({ username: "viewer", password: "Password viewer 123!" }),
+    }));
+    const viewerCsrf = (await viewerLogin.json() as { csrf: string }).csrf;
+    const viewerCookie = cookieHeader(viewerLogin);
+    const envKeys = ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET", "GOOGLE_REFRESH_TOKEN", "GOOGLE_SEARCH_CONSOLE_SITE_URL"];
+    const previousEnv = Object.fromEntries(envKeys.map((key) => [key, process.env[key]]));
+    const previousFetch = globalThis.fetch;
+    const googleCalls: string[] = [];
+    for (const [key, value] of Object.entries({
+      GOOGLE_CLIENT_ID: "test-google-client",
+      GOOGLE_CLIENT_SECRET: "test-google-secret",
+      GOOGLE_REFRESH_TOKEN: "test-google-refresh",
+      GOOGLE_SEARCH_CONSOLE_SITE_URL: "sc-domain:cabalou.net",
+    })) process.env[key] = value;
+    globalThis.fetch = (async (input, init) => {
+      const url = new URL(String(input));
+      if (url.hostname === "test.supabase.co") return previousFetch(input, init);
+      googleCalls.push(url.href);
+      if (url.href === "https://oauth2.googleapis.com/token") {
+        return Response.json({ access_token: "test-google-access" });
+      }
+      const query = JSON.parse(String(init?.body)) as { dimensions: string[] };
+      return Response.json({ rows: [{
+        keys: query.dimensions.length === 1
+          ? ["2025-04-03"]
+          : ["2025-04-03", "hotel cabalou", "https://cabalou.net/", "gab", "MOBILE"],
+        clicks: 4, impressions: 40, ctr: 0.1, position: 5.5,
+      }] });
+    }) as typeof fetch;
+    try {
+      const response = await route.POST(new NextRequest("http://127.0.0.1:3000/api/seo/sync", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json", host: "127.0.0.1:3000", origin: "http://127.0.0.1:3000",
+          cookie: adminCookie, "x-csrf-token": adminCsrf,
+        },
+        body: JSON.stringify({ start_date: "2025-04-03", end_date: "2025-04-03" }),
+      }));
+      assert.equal(response.status, 200);
+      assert.equal((await response.json() as { rows_synced: number }).rows_synced, 1);
+      assert.equal(googleCalls.length, 3);
+
+      const forbidden = await route.POST(new NextRequest("http://127.0.0.1:3000/api/seo/sync", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json", host: "127.0.0.1:3000", origin: "http://127.0.0.1:3000",
+          cookie: viewerCookie, "x-csrf-token": viewerCsrf,
+        },
+        body: JSON.stringify({ start_date: "2025-04-03", end_date: "2025-04-03" }),
+      }));
+      assert.equal(forbidden.status, 403);
+      assert.equal(googleCalls.length, 3);
+    } finally {
+      globalThis.fetch = previousFetch;
+      for (const [key, value] of Object.entries(previousEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   it("réinitialise l’approbation lors du remplacement ou retrait d’une photo", async () => {

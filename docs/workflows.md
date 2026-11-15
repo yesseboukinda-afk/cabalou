@@ -17,7 +17,7 @@ La pastille **Assistant** est disponible après connexion. Elle peut proposer un
 - **Prospection B2B** : suivre l’organisation, un contact facultatif, un e-mail facultatif, la source, une base de contact vérifiée, le brouillon, une éventuelle date de relance et les réponses/qualifications consignées. La transition vers « envoi consigné » exige un e-mail, un brouillon et une base vérifiée ; elle ne déclenche pas d’envoi. Une opposition bloque les transitions suivantes. Les comptes en lecture seule ne voient pas le nom ni l’e-mail du contact.
 - **Réactivation** : suivre une référence pseudonymisée, la date du dernier séjour et la base de contact vérifiée. Le suivi, la réponse et la réservation sont consignés manuellement et consultables dans l’historique ; aucune donnée de réservation détaillée ni coordonnée client n’est enregistrée ici.
 - **Retargeting** : suivre une référence pseudonymisée et une catégorie d’intérêt non sensible. Le suivi manuel est bloqué tant que le consentement publicitaire n’a pas été confirmé. Aucun pixel, audience, export ou ciblage publicitaire n’est créé.
-- **SEO** : tenir une liste de requêtes cibles et enregistrer des positions/clics/impressions mensuels vérifiés. Ces valeurs manuelles ne proviennent pas de Google tant que Search Console n’est pas connectée.
+- **SEO** : synchroniser manuellement depuis Search Console les clics, impressions, CTR et positions moyennes par date, requête, page, pays et appareil; les requêtes cibles et mesures historiques peuvent aussi être saisies manuellement.
 
 ## Données, rôles et limites
 

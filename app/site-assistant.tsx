@@ -290,7 +290,7 @@ export function SiteAssistant({
         />
         <button type="submit" disabled={sending || !input.trim()} aria-label="Envoyer le message">{sending ? "…" : "↑"}</button>
       </form>
-      <p className="site-assistant-disclaimer">Chaque opération réelle attend votre confirmation. Ne partagez pas de mot de passe, clé, jeton ou donnée personnelle.</p>
+      <p className="site-assistant-disclaimer">Vérifiez les propositions avant de les appliquer. Ne partagez pas d’informations sensibles.</p>
     </section>}
     <button
       type="button"
