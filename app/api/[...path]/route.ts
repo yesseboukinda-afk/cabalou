@@ -154,7 +154,6 @@ function statusError(error: unknown, request: NextRequest) {
 
 export async function GET(request: NextRequest) {
   try {
-    await initializeDatabase();
     const parts = pathInfo(request);
     const path = `/${parts.join("/")}`;
     if (path === "/api/session") {
@@ -173,6 +172,7 @@ export async function GET(request: NextRequest) {
       return response;
     }
 
+    await initializeDatabase();
     const { user } = await requireSession(request);
     if (path === "/api/dashboard") return json(await dashboard());
     if (parts[1] === "meta" && parts[2] === "posts" && parts[4] === "attachments" && parts.length === 5) {

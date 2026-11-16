@@ -306,7 +306,9 @@ export function CabalouApp() {
 
   useEffect(() => {
     let active = true;
-    fetch("/api/session", { cache: "no-store" })
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 20_000);
+    fetch("/api/session", { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         const session = await response.json() as Payload;
         if (!active) return;
@@ -315,9 +317,22 @@ export function CabalouApp() {
           setCsrf(String(session.csrf ?? ""));
         }
       })
-      .catch(() => { if (active) setError("Impossible de se connecter à Cabalou. Réessayez dans quelques instants."); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
+      .catch(() => {
+        if (active) {
+          setError(controller.signal.aborted
+            ? "Le serveur met trop de temps à répondre. Vérifiez votre connexion puis rechargez la page."
+            : "Impossible de se connecter à Cabalou. Réessayez dans quelques instants.");
+        }
+      })
+      .finally(() => {
+        window.clearTimeout(timeout);
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
   }, []);
 
   useEffect(() => { if (user) void refresh(); }, [user, view, refresh]);
@@ -392,7 +407,14 @@ export function CabalouApp() {
           <button className="button button-primary full-width" disabled={busy}>Se connecter</button>
           <Alert error={error} />
         </form>
-        <p className="fine-print">Les publications ne sont jamais envoyées automatiquement. Les services externes restent configurables depuis l’espace Intégrations.</p>
+        <footer className="login-footer">
+          <span>© {new Date().getFullYear()} Cabalou</span>
+          <a href="https://github.com/yesseboukinda-afk" target="_blank" rel="noreferrer" aria-label="Profil GitHub du développeur">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M12 .5a12 12 0 0 0-3.79 23.39c.6.11.82-.26.82-.58v-2.05c-3.34.73-4.04-1.42-4.04-1.42-.55-1.39-1.33-1.76-1.33-1.76-1.09-.75.08-.73.08-.73 1.2.08 1.84 1.23 1.84 1.23 1.07 1.84 2.81 1.31 3.49 1 .11-.78.42-1.31.76-1.61-2.67-.3-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.1-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.29-1.55 3.29-1.23 3.29-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.81 5.63-5.48 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.69.83.57A12 12 0 0 0 12 .5Z" />
+            </svg>
+          </a>
+        </footer>
       </section>
       {busy && (
         <div className="login-auth-loading">
@@ -1574,6 +1596,7 @@ function PasswordField({
           <svg aria-hidden="true" viewBox="0 0 24 24" fill="none">
             <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z" />
             <circle cx="12" cy="12" r="3" />
+            <path className="password-eye-slash" d="M3 3l18 18" />
           </svg>
         </button>
       </div>

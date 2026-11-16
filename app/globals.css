@@ -925,6 +925,11 @@ input:focus, select:focus, textarea:focus { border-color: #8c3f32; box-shadow: 0
 .password-toggle:hover { background: #f0eeea; color: #171717; }
 .password-toggle:focus-visible { outline: 2px solid #8c3f32; outline-offset: 1px; }
 .password-toggle svg { width: 18px; height: 18px; stroke: currentColor; stroke-width: 1.7; }
+.password-eye-slash { opacity: 1; transition: opacity .16s ease; }
+.password-toggle[aria-pressed="true"] .password-eye-slash { opacity: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .password-eye-slash { transition: none; }
+}
 .stack-form input, .form-grid input, .form-grid select, .form-grid textarea, .report-group input, .report-source input, .inline-label input, table select {
   width: 100%; min-height: 38px; padding: 9px 10px; border: 1px solid #dfe6e1; border-radius: 7px; background: #fff; color: var(--ink);
 }
@@ -1782,6 +1787,19 @@ input:focus, select:focus, textarea:focus { background: rgba(255, 255, 255, .94)
   color: rgba(255, 255, 255, .94);
 }
 .login-card .eyebrow { color: #f0c574; }
+.login-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, .24);
+  color: rgba(255, 255, 255, .78);
+  font-size: 10px;
+}
+.login-footer a { display: grid; width: 22px; height: 22px; place-items: center; color: inherit; }
+.login-footer a svg { width: 18px; height: 18px; }
+.login-footer a:hover { color: #f0c574; }
 .login-card .stack-form input {
   border-color: rgba(255, 255, 255, .52);
   background: transparent;
@@ -1985,15 +2003,14 @@ input[type="radio"]:checked {
   background: radial-gradient(circle, #e8b764 0 4px, rgba(255, 255, 255, .24) 4.5px) !important;
   box-shadow: 0 0 0 2px rgba(232, 183, 100, .2);
 }
-button:not(.text-button):not(.dashboard-hero-link):not(.sidebar-backdrop),
+button:not(.text-button):not(.dashboard-hero-link):not(.sidebar-backdrop):not(.password-toggle),
 .button,
 .icon-button,
 .nav-item,
 .user-menu,
 .filter-tab,
 .select-compact,
-.source-pill,
-.password-toggle {
+.source-pill {
   border: 1px solid rgba(255, 255, 255, .52);
   border-radius: 10px;
   background-color: rgba(255, 255, 255, .07);
