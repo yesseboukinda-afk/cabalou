@@ -26,6 +26,8 @@ type AuthResponse = {
   user?: unknown;
 };
 
+const AUTH_REQUEST_TIMEOUT_MS = 15_000;
+
 function config(admin = false) {
   const url = process.env.SUPABASE_URL?.replace(/\/+$/, "");
   const anonKey = process.env.SUPABASE_ANON_KEY;
@@ -53,9 +55,10 @@ async function request<T>(
   path: string,
   options: { key: string; method?: string; bearer?: string; body?: Record<string, unknown> },
 ): Promise<{ status: number; data: T | null }> {
-  let response: Response;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), AUTH_REQUEST_TIMEOUT_MS);
   try {
-    response = await fetch(`${configUrl()}${path}`, {
+    const response = await fetch(`${configUrl()}${path}`, {
       method: options.method ?? "GET",
       headers: {
         apikey: options.key,
@@ -64,12 +67,15 @@ async function request<T>(
       },
       ...(options.body ? { body: JSON.stringify(options.body) } : {}),
       cache: "no-store",
+      signal: controller.signal,
     });
+    const data = await response.json().catch(() => null) as T | null;
+    return { status: response.status, data };
   } catch {
     throw new SupabaseAuthError(503, "Impossible de joindre Supabase Auth.");
+  } finally {
+    clearTimeout(timeout);
   }
-  const data = await response.json().catch(() => null) as T | null;
-  return { status: response.status, data };
 }
 
 function configUrl(): string {
