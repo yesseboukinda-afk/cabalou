@@ -65,18 +65,6 @@ const INTEGRATIONS: Integration[] = [
     purpose: "Aucun scraping, collecte automatisée ou publication dans un groupe.",
   },
   {
-    id: "tiktok_account", name: "TikTok — compte", description: "Relie le compte TikTok de Cabalou.",
-    required_environment: ["TIKTOK_ACCESS_TOKEN", "TIKTOK_OPEN_ID"], setup_url: "https://developers.tiktok.com/",
-    scopes: "Login Kit et scopes approuvés pour le compte Cabalou.", purpose: "Aucun contenu n’est publié.",
-  },
-  {
-    id: "tiktok_ads", name: "TikTok Ads — retargeting", description: "Relie le compte publicitaire TikTok utilisé pour le retargeting.",
-    required_environment: ["TIKTOK_ADVERTISER_ID", "TIKTOK_ADS_ACCESS_TOKEN"],
-    setup_url: "https://business-api.tiktok.com/portal/",
-    scopes: "API for Business approuvée avec accès de lecture à l’annonceur.",
-    purpose: "Aucune audience, campagne ou donnée de contact n’est envoyée.",
-  },
-  {
     id: "smtp", name: "E-mail — serveur SMTP", description: "Permet l’envoi des e-mails de Cabalou.",
     required_environment: ["CABALOU_SMTP_HOST", "CABALOU_SMTP_PORT", "CABALOU_SMTP_USERNAME", "CABALOU_SMTP_PASSWORD", "CABALOU_SMTP_FROM"],
     setup_url: "", scopes: "Compte d’envoi dédié, SPF/DKIM/DMARC vérifiés et désabonnement géré.",
@@ -627,33 +615,6 @@ async function checkProvider(id: string): Promise<string> {
       apiSuccess(result, "Meta", url, undefined, "page-read");
     if (string(result.id) !== accountId) throw new HttpError(400, "Meta a retourné un compte différent de celui configuré.");
     return "Jeton Meta valide; Page accessible en lecture.";
-  }
-  if (id === "tiktok_account") {
-    const profile = await requestJson("https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name", {
-      headers: { Authorization: `Bearer ${process.env.TIKTOK_ACCESS_TOKEN}` },
-    });
-    apiSuccess(profile, "TikTok");
-    const data = profile.data as Record<string, unknown> | undefined;
-    const user = data?.user as Record<string, unknown> | undefined;
-    if (user?.open_id !== process.env.TIKTOK_OPEN_ID) throw new HttpError(400, "Le compte TikTok connecté ne correspond pas au compte Cabalou.");
-    return "Le compte TikTok est connecté.";
-  }
-  if (id === "tiktok_ads") {
-    const advertiserId = process.env.TIKTOK_ADVERTISER_ID!;
-    const query = new URLSearchParams({
-      advertiser_ids: JSON.stringify([advertiserId]),
-      fields: JSON.stringify(["advertiser_id", "name", "currency", "status"]),
-    });
-    const response = await requestJson(`https://business-api.tiktok.com/open_api/v1.3/advertiser/info/?${query}`, {
-      headers: { "Access-Token": process.env.TIKTOK_ADS_ACCESS_TOKEN! },
-    });
-    if (response.code !== 0) throw new HttpError(400, "TikTok Ads a refusé l’accès. Vérifiez l’annonceur et les autorisations API for Business.");
-    const data = response.data as Record<string, unknown> | undefined;
-    const advertisers = data?.list;
-    if (!Array.isArray(advertisers) || !advertisers.some((entry) => entry && typeof entry === "object" && String((entry as Record<string, unknown>).advertiser_id) === advertiserId)) {
-      throw new HttpError(400, "TikTok Ads n’a pas retourné l’annonceur configuré.");
-    }
-    return "Jeton TikTok Ads valide; annonceur accessible en lecture.";
   }
   if (id === "smtp") {
     const port = Number(process.env.CABALOU_SMTP_PORT);
@@ -1294,7 +1255,7 @@ export async function generateContent(data: Record<string, unknown>) {
   const primaryProvider = providers[0];
   if (primaryProvider.id !== "deepseek") configured(primaryProvider.id);
   const channel = cleanText(data.channel, "réseau", 20);
-  if (!["facebook", "tiktok"].includes(channel)) throw new HttpError(400, "Le réseau doit être Facebook ou TikTok.");
+  if (channel !== "facebook") throw new HttpError(400, "Le réseau doit être Facebook.");
   const objective = cleanText(data.objective, "objectif", 240);
   const tone = cleanText(data.tone, "ton", 120);
   const audience = cleanText(data.audience ?? "", "public visé", 160, false);

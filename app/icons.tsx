@@ -140,14 +140,6 @@ export function IconFacebook({ size = 14, ...props }: IconProps) {
   );
 }
 
-export function IconTiktok({ size = 14, ...props }: IconProps) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" {...props}>
-      <path d="M9 12a4 4 0 1 0 4 4V4a5 5 0 0 0 5 5v3a8 8 0 0 1-5-1.8V16a6 6 0 1 1-6-6v2z" />
-    </svg>
-  );
-}
-
 export function IconExternalLink({ size = 14, ...props }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>

@@ -137,7 +137,6 @@ h2 { margin-bottom: 5px; font-size: 16px; letter-spacing: -.025em; }
 .post-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-bottom: 10px; }
 .channel-tag { padding: 4px 7px; border-radius: 5px; font-size: 9px; font-weight: 750; }
 .channel-tag.facebook { background: #ebf1ff; color: #4267a9; }
-.channel-tag.tiktok { background: #f0eff0; color: #323032; }
 .post-date { color: #929c96; font-size: 10px; }
 .post-card h2 { margin-bottom: 7px; font-size: 15px; }
 .post-excerpt { max-width: 760px; margin-bottom: 12px; color: #69766f; font-size: 12px; line-height: 1.6; white-space: pre-line; }
@@ -3522,12 +3521,6 @@ dialog[open]::backdrop {
   background: rgba(24, 119, 242, 0.15);
   border: 1px solid rgba(24, 119, 242, 0.4);
   color: #60a5fa;
-}
-
-.channel-pill-chip.tiktok {
-  background: rgba(254, 44, 85, 0.12);
-  border: 1px solid rgba(254, 44, 85, 0.35);
-  color: #f43f5e;
 }
 
 .mkt-listing-tag {

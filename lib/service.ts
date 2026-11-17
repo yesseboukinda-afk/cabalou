@@ -198,7 +198,7 @@ export async function savePost(actorId: number, id: number | null, data: JsonObj
   const body = text(data, "body", "texte", 5000, false);
   const destination = validateHttpsUrl(data.destination_url ?? "https://cabalou.net/", "Le lien de destination");
   const scheduledDate = text(data, "scheduled_date", "date souhaitée", 10, false) || null;
-  if (!["facebook", "tiktok"].includes(channel)) throw new HttpError(400, "Le canal doit être Facebook ou TikTok.");
+  if (channel !== "facebook") throw new HttpError(400, "Le canal doit être Facebook.");
   if (scheduledDate) {
     const parsedDate = new Date(`${scheduledDate}T00:00:00Z`);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(scheduledDate)

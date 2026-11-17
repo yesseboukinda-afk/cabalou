@@ -14,7 +14,7 @@ Ce document développe le MVP approuvé. Il ne constitue pas un choix définitif
 
 Fournir à l’équipe Cabalou un espace interne en français pour :
 
-- préparer des publications Facebook et TikTok à partir de faits vérifiés ;
+- préparer des publications Facebook à partir de faits vérifiés ;
 - planifier et faire approuver les brouillons dans un calendrier éditorial ;
 - conserver les versions, validations et résultats déclarés ;
 - consulter les principales métriques SEO disponibles dans Google Search Console ;
@@ -50,7 +50,7 @@ Les chiffres d’audience, de nuitées et de réservations repris du cahier des 
 
 ### Explicitement exclu du MVP
 
-- Publication automatisée via Meta ou TikTok ; le contenu approuvé est exporté ou copié vers le canal natif par l’opérateur.
+- Publication automatisée ; le contenu approuvé est copié vers Facebook par l’opérateur.
 - Collecte ou publication automatisée dans les groupes Facebook.
 - Email marketing, prospection commerciale, réactivation et gestion des listes de destinataires.
 - Envoi à une audience publicitaire ou retargeting.
@@ -128,7 +128,7 @@ Actions : ouvrir, modifier, dupliquer, soumettre à validation, annuler une plan
 
 ### 4.4 Éditeur de contenu
 
-- Sélecteur de canal (Facebook ou TikTok).
+- Canal de publication Facebook.
 - Sélecteur de logement ou de thème éditorial.
 - Panneau de faits vérifiés : ville, type, équipements autorisés, URL, média, source et fraîcheur.
 - Champ d’objectif éditorial, audience visée et ton depuis une liste contrôlée.

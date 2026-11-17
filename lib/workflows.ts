@@ -69,7 +69,7 @@ export async function listWorkflows(canViewContactDetails: boolean) {
 
 export async function createSocial(actor: number, data: Data) {
   const channel = value(data, "channel", "réseau", 20);
-  if (!["facebook", "tiktok"].includes(channel)) throw new HttpError(400, "Le réseau doit être Facebook ou TikTok.");
+  if (channel !== "facebook") throw new HttpError(400, "Le réseau doit être Facebook.");
   const ref = value(data, "post_reference", "référence du contenu", 160, false);
   const summary = value(data, "comment_summary", "résumé du commentaire", 1500);
   return createRow(actor, "social_interactions", {

@@ -22,7 +22,7 @@ Le périmètre couvre six axes : contenus sociaux, détection de demandes dans l
 - Cabalou est une plateforme de réservation lancée en mai 2022, active au Gabon et au Bénin.
 - Le document indique plus de 300 logements au Gabon et 105 au Bénin, plus de 800 clients servis, et 9 831 nuitées vendues sur juillet-août 2026.
 - Les logements concernés sont des appartements meublés et des hôtels.
-- Les canaux cités sont Facebook, TikTok, les groupes Facebook, e-mail, Google, WhatsApp et cabalou.net.
+- Les canaux retenus pour ce projet sont Facebook, les groupes Facebook, e-mail, Google, WhatsApp et cabalou.net.
 - Les campagnes doivent orienter les prospects vers WhatsApp ou cabalou.net ; la majorité des réservations se conclut sur WhatsApp.
 - Cabalou héberge ses bases clients, hébergeurs et réservations. Ses comptes, domaine et abonnements restent à son nom.
 - Les accès des intervenants doivent être délégués, minimaux et révocables.
@@ -82,7 +82,6 @@ Les indicateurs chiffrés cibles ne sont pas fournis. Ils devront être établis
 |---|---|---|---|
 | Meta Graph API — Pages | Publication et consultation d’un fil de Page | La documentation officielle décrit le fil de Page et les tâches de Page nécessaires. L’accès effectif, les permissions et l’examen de l’application restent à confirmer pour les comptes Cabalou. | Préparer et approuver dans l’outil, puis publier manuellement depuis Meta Business Suite. |
 | Meta — groupes Facebook | Lire les demandes et publier une réponse | Le lien officiel de référence de fil de groupe testé redirige vers l’index général ; aucune capacité exploitable n’est retenue sans confirmation explicite de Meta et des administrateurs des groupes. | Recherche et publication manuelles par l’opérateur ; l’IA traite uniquement les informations fournies volontairement à l’outil. |
-| TikTok Content Posting API | Publication de vidéos/photos autorisées | TikTok exige une application enregistrée, le produit Content Posting, l’autorisation `video.publish` de l’utilisateur et l’audit de l’application pour lever la restriction de visibilité privée des clients non audités. Les quotas et règles exactes devront être vérifiés au moment de l’intégration. | Génération/export de contenus, puis publication native par un opérateur. |
 | Google Search Console API | Mesure SEO | L’API officielle expose notamment Search Analytics, les sitemaps, les propriétés et l’inspection d’URL. Cabalou doit donner un accès autorisé à la propriété web ; quotas et disponibilité à confirmer. | Export périodique manuel depuis Search Console. |
 | Meta Marketing API / audiences | Retargeting par audience CRM ou événements | L’API décrit les audiences personnalisées à partir de données client normalisées et hachées. Cela reste un transfert de données, soumis aux conditions de Meta, aux permissions et à l’éligibilité du compte ; le hachage ne remplace pas le consentement ni la base légale. | Audiences contextuelles moins dépendantes du CRM, ou report de la fonctionnalité. |
 | Fournisseur d’e-mail | Envoi, désabonnement, retours et éventuellement réponses | Aucun fournisseur n’est encore choisi. Vérifier API, sous-traitance, localisation/rétention, gestion des rebonds et suppression, authentification SPF/DKIM/DMARC, limites et tarifs. | Processus d’envoi contrôlé via l’outil déjà détenu par Cabalou. |
@@ -92,7 +91,6 @@ Les indicateurs chiffrés cibles ne sont pas fournis. Ils devront être établis
 **Sources officielles consultées le 2 novembre 2026 :**
 
 - Meta, [Page Feed](https://developers.facebook.com/docs/graph-api/reference/page/feed/).
-- TikTok, [Content Posting API — démarrage](https://developers.tiktok.com/doc/content-posting-api-get-started/) et [Direct Post](https://developers.tiktok.com/doc/content-posting-api-reference-direct-post).
 - Google, [Search Console API — référence](https://developers.google.com/webmaster-tools/v1/api_reference_index).
 - Meta, [Customer File Custom Audiences](https://developers.facebook.com/docs/marketing-api/audiences/guides/custom-audiences/).
 - OpenAI, [Data controls in the API platform](https://developers.openai.com/api/docs/guides/your-data).
@@ -125,7 +123,7 @@ Application marketing (interface française + API métier)
      ├── Base marketing minimale : brouillons, campagnes, consentements,
      │   prospects autorisés, historiques et agrégats KPI
      ├── Connecteur métier en lecture seule ───► API/vue Cabalou
-     ├── Tâches planifiées / worker ────────────► e-mail, Meta, TikTok,
+     ├── Tâches planifiées / worker ────────────► e-mail, Meta,
      │                                            Google selon permissions
      ├── Passerelle IA contrôlée ───────────────► fournisseur approuvé
      ├── Stockage privé médias / exports
@@ -304,7 +302,7 @@ Ordre de grandeur initial à confirmer après audit :
 2. Confirmer le MVP prioritaire : contenus sociaux, calendrier éditorial et SEO/KPI avant les autres modules.
 3. Quelle application, base de données, hébergement, CI/CD et supervision sont déjà utilisés ? Existe-t-il des environnements de test ?
 4. Cabalou peut-il fournir une API ou des vues en lecture seule pour les logements, caractéristiques publiables et données SEO ? Qui en est responsable ?
-5. Quelles pages/comptes Meta, TikTok et Google sont disponibles, qui en est administrateur, et quels accès développeur sont déjà approuvés ?
+5. Quelles pages/comptes Meta et Google sont disponibles, qui en est administrateur, et quels accès développeur sont déjà approuvés ?
 6. Qui approuve les contenus, et quelles règles de marque, offres, médias et droits d’utilisation doivent être respectées ?
 7. Quels objectifs et seuils KPI retenir pour les publications, les clics, les contacts WhatsApp et les indicateurs SEO ?
 8. Quels consentements, préférences, oppositions et informations de confidentialité sont enregistrés pour les futures campagnes e-mail, la réactivation et les traceurs ?
@@ -331,14 +329,14 @@ Le périmètre initial est resserré conformément à la priorité choisie : **c
 
 1. Gestion sécurisée des utilisateurs, rôles, journal d’audit et état des intégrations.
 2. Connecteur en lecture seule ou import contrôlé de logements, avec fraîcheur des faits et blocage des données périmées.
-3. Génération de textes et idées pour Facebook/TikTok à partir des seuls faits validés, avec historique, aperçu et approbation.
+3. Génération de textes et idées pour Facebook à partir des seuls faits validés, avec historique, aperçu et approbation.
 4. Calendrier éditorial, liens vers cabalou.net/WhatsApp et publication manuelle au démarrage.
 5. Import des métriques Search Console et tableau de bord éditorial/SEO : publications, clics mesurables, impressions, CTR, position moyenne et erreurs.
 6. Documentation française, formation sur les comptes Cabalou et remise des paramètres/prompts/code selon accord de propriété.
 
 ### Priorité P1 — après validation du MVP
 
-- Publication de Pages Facebook et/ou TikTok après preuve d’accès, examen de l’application et validation du parcours opérateur.
+- Publication de Pages Facebook après preuve d’accès, examen de l’application et validation du parcours opérateur.
 - Assistance manuelle aux demandes des groupes Facebook, sans collecte ni publication automatisée.
 - Réactivation e-mail en petit pilote si la base de contact, les finalités et les consentements sont validés ; approbation humaine avant chaque campagne.
 - Prospection e-mail B2B à partir de sources autorisées, avec suppression/désabonnement et plafond d’envoi.
@@ -355,8 +353,8 @@ Le périmètre initial est resserré conformément à la priorité choisie : **c
 
 ## Prochaine porte de décision
 
-Le périmètre P0 et le principe des flux minimisés sont validés. Pour achever l’audit, Cabalou devra fournir ou faire confirmer par son responsable technique : un inventaire de l’application/base et de l’hébergement, une documentation expurgée des API/vues en lecture seule et de leurs champs, le statut des accès développeur Meta/TikTok/Search Console, ainsi que les règles de consentement et les fournisseurs autorisables. Aucun mot de passe, jeton, clé API ni donnée client ne doit être transmis dans cette étape.
+Le périmètre P0 et le principe des flux minimisés sont validés. Pour achever l’audit, Cabalou devra fournir ou faire confirmer par son responsable technique : un inventaire de l’application/base et de l’hébergement, une documentation expurgée des API/vues en lecture seule et de leurs champs, le statut des accès développeur Meta/Search Console, ainsi que les règles de consentement et les fournisseurs autorisables. Aucun mot de passe, jeton, clé API ni donnée client ne doit être transmis dans cette étape.
 
 Après réception de ces éléments : mener l’audit technique et des consentements, vérifier les accès avec des comptes de test, puis produire la spécification détaillée et un chiffrage fournisseur. Aucun développement ne devrait commencer avant cette validation, conformément au cahier des charges.
 
-Les estimations de charge ci-dessus sont préliminaires et devront être recalculées dès réception des réponses, des schémas/API et des devis. Les intégrations Facebook/TikTok, la prospection et le retargeting restent conditionnels aux permissions, règles de plateforme et validations de conformité.
+Les estimations de charge ci-dessus sont préliminaires et devront être recalculées dès réception des réponses, des schémas/API et des devis. L’intégration Facebook, la prospection et le retargeting restent conditionnels aux permissions, règles de plateforme et validations de conformité.

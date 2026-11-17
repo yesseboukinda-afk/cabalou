@@ -83,28 +83,6 @@ Le compositeur peut programmer du texte, des photos/albums et des vidéos entre 
 
 Les publications vidéo affichent un lecteur avec commandes de lecture et de déplacement dans la vidéo. Le navigateur lit le flux via une route Cabalou authentifiée; le serveur récupère la source auprès de Meta et relaie les requêtes de plages d’octets, sans exposer le jeton de Page ni l’URL CDN au navigateur.
 
-### TikTok — compte
-
-| Variable | Description |
-|---|---|
-| `TIKTOK_ACCESS_TOKEN` | Jeton d’accès serveur accordé au compte Cabalou |
-| `TIKTOK_OPEN_ID` | Identifiant TikTok associé au jeton |
-
-Le test appelle Login Kit `user/info` et compare l’identifiant retourné. L’application, les redirect URIs, scopes, procédure d’autorisation et renouvellement des jetons doivent être gérés dans TikTok for Developers ; ce prototype ne conserve pas de refresh token.
-
-Documentation : [TikTok Login Kit for Web](https://developers.tiktok.com/docs/en/login-kit-web), [Content Posting API](https://developers.tiktok.com/products/content-posting-api/).
-
-### TikTok Ads — retargeting
-
-| Variable | Description |
-|---|---|
-| `TIKTOK_ADVERTISER_ID` | Identifiant annonceur TikTok for Business |
-| `TIKTOK_ADS_ACCESS_TOKEN` | Jeton API for Business de lecture |
-
-Le test appelle `GET /open_api/v1.3/advertiser/info/` avec `Access-Token`, les paramètres `advertiser_ids` et `fields` dans la query string, puis confirme que la réponse contient l’annonceur demandé. Il ne récupère que son ID, son nom, sa devise et son statut ; aucune donnée de contact. Il ne crée ni audience, ni campagne et ne transmet aucun identifiant de client. Les droits d’accès et la disponibilité de l’API dépendent de l’approbation du compte et de l’application.
-
-Documentation : [Get ad account details](https://business-api.tiktok.com/portal/docs/get-ad-account-details/v1.3).
-
 ### SMTP — serveur e-mail Cabalou
 
 | Variable | Description |

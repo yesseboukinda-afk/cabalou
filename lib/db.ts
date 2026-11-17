@@ -166,7 +166,7 @@ export async function initializeDatabase(): Promise<void> {
       );
       CREATE TABLE IF NOT EXISTS posts (
         id INTEGER PRIMARY KEY, title TEXT NOT NULL,
-        channel TEXT NOT NULL CHECK (channel IN ('facebook', 'tiktok')),
+        channel TEXT NOT NULL CHECK (channel = 'facebook'),
         body TEXT NOT NULL DEFAULT '',
         destination_url TEXT NOT NULL DEFAULT 'https://cabalou.net/',
         listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL,
@@ -214,7 +214,7 @@ export async function initializeDatabase(): Promise<void> {
         PRIMARY KEY (period, metric_key)
       );
       CREATE TABLE IF NOT EXISTS social_interactions (
-        id INTEGER PRIMARY KEY, channel TEXT NOT NULL CHECK (channel IN ('facebook','tiktok')),
+        id INTEGER PRIMARY KEY, channel TEXT NOT NULL CHECK (channel = 'facebook'),
         post_reference TEXT NOT NULL DEFAULT '', comment_summary TEXT NOT NULL,
         reply_draft TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'open'
           CHECK (status IN ('open','draft','replied','ignored')),

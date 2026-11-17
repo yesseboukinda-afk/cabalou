@@ -19,7 +19,7 @@ type AssistantAction = {
     tone: string;
     audience: string;
     brief: string;
-    channel: "facebook" | "tiktok";
+    channel: "facebook";
   } | null;
   meta_post: { message: string } | null;
   operation: AssistantOperation | null;
@@ -142,7 +142,7 @@ function validateAction(value: unknown, allowedViews: ChatView[], role: string):
       if (fields.some((field) => containsPersonalContact(content[field] as string))) {
         return { type: "none", view: null, content: null, meta_post: null, operation: null };
       }
-      if (content.channel !== "facebook" && content.channel !== "tiktok") {
+      if (content.channel !== "facebook") {
         return { type: "none", view: null, content: null, meta_post: null, operation: null };
       }
       return {
@@ -375,7 +375,7 @@ export async function chatWithSiteAssistant(data: Record<string, unknown>, role:
               tone: { type: "string" },
               audience: { type: "string" },
               brief: { type: "string" },
-              channel: { type: "string", enum: ["facebook", "tiktok"] },
+              channel: { type: "string", enum: ["facebook"] },
             },
           },
           meta_post: {

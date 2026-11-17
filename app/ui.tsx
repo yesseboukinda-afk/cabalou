@@ -20,7 +20,6 @@ import {
   IconLogout,
   IconMenu,
   IconFacebook,
-  IconTiktok,
   IconExternalLink,
 } from "./icons";
 
@@ -1657,7 +1656,7 @@ function Dashboard({ data, setView }: { data: Record<string, unknown>; setView: 
         <div className="mkt-action-left">
           <div>
             <strong>Validation éditoriale requise</strong>
-            <p>{pendingApprovals} publication(s) préparée(s) attendent votre feu vert avant diffusion sur Facebook ou TikTok.</p>
+            <p>{pendingApprovals} publication(s) préparée(s) attendent votre feu vert avant diffusion sur Facebook.</p>
           </div>
         </div>
         <button className="button button-primary small" onClick={() => setView("content")}>
@@ -1765,7 +1764,7 @@ function Dashboard({ data, setView }: { data: Record<string, unknown>; setView: 
         <div className="panel-heading">
           <div>
             <h2>Prochaines publications</h2>
-            <p className="muted">Contenus planifiés pour Facebook et TikTok</p>
+            <p className="muted">Contenus planifiés pour Facebook</p>
           </div>
           <button className="text-button" onClick={() => setView("calendar")}>Calendrier complet →</button>
         </div>
@@ -1832,12 +1831,13 @@ function Empty({ children }: { children: ReactNode }) {
 
 function PostRow({ post }: { post: Row }) {
   const channel = String(post.channel ?? "facebook").toLowerCase();
-  const isFb = channel.includes("facebook");
+  const isFacebook = channel === "facebook";
+  const channelLabel = isFacebook ? "Facebook" : "Canal indisponible";
   return (
     <div className="upcoming-item mkt-upcoming-item">
-      <span className={`channel-pill-chip ${isFb ? "facebook" : "tiktok"}`}>
-        {isFb ? <IconFacebook size={12} /> : <IconTiktok size={12} />}
-        <span>{isFb ? "Facebook" : "TikTok"}</span>
+      <span className={`channel-pill-chip ${isFacebook ? "facebook" : ""}`}>
+        {isFacebook && <IconFacebook size={12} />}
+        <span>{channelLabel}</span>
       </span>
       <div className="upcoming-item-details">
         <strong>{display(post.title)}</strong>
@@ -1982,7 +1982,7 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview, ca
     <PageHeading
       eyebrow="STUDIO SOCIAL"
       title="Studio Contenus"
-      description="Rédigez, validez et pilotez vos publications Facebook et TikTok sans jamais publier à l'aveugle."
+      description="Rédigez, validez et pilotez vos publications Facebook sans jamais publier à l'aveugle."
       action={canEdit ? (
         <button className="button button-primary mkt-hero-btn" onClick={startCreate}>
           + Nouveau contenu
@@ -2001,7 +2001,7 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview, ca
         </div>
         <form className="form-grid" onSubmit={(event) => void savePost(event)}>
           <label>Titre de travail<input required maxLength={160} value={draft.title} placeholder="Ex. Escapade nature en lodge" onChange={(event) => setDraft({ ...draft, title: event.target.value })} /></label>
-          <label>Canal social<select value={draft.channel} onChange={(event) => setDraft({ ...draft, channel: event.target.value })}><option value="facebook">Facebook</option><option value="tiktok">TikTok</option></select></label>
+          <label>Canal social<input value="Facebook" disabled readOnly /></label>
           <label>Logement rattaché<select value={draft.listing_id} onChange={(event) => setDraft({ ...draft, listing_id: event.target.value })}><option value="">Aucun logement spécifique</option>{listings.map((item) => <option key={String(item.id)} value={String(item.id)}>{display(item.name)} — {display(item.city)}</option>)}</select></label>
           <label>Date de diffusion souhaitée<input type="date" value={draft.scheduled_date} onChange={(event) => setDraft({ ...draft, scheduled_date: event.target.value })} /></label>
           <label className="span-two">Lien de redirection (Call to Action)<input type="url" required value={draft.destination_url} onChange={(event) => setDraft({ ...draft, destination_url: event.target.value })} /></label>
@@ -2107,14 +2107,14 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview, ca
         <div className="content-list mkt-card-grid">
           {filteredPosts.map((post) => {
             const channel = String(post.channel ?? "facebook").toLowerCase();
-            const isFb = channel.includes("facebook");
+            const isFacebook = channel === "facebook";
             return (
               <article className="content-card mkt-post-card" key={String(post.id)}>
                 <div className="mkt-card-header">
                   <div className="mkt-card-header-left">
-                    <span className={`channel-pill-chip ${isFb ? "facebook" : "tiktok"}`}>
-                      {isFb ? <IconFacebook size={12} /> : <IconTiktok size={12} />}
-                      <span>{isFb ? "Facebook" : "TikTok"}</span>
+                    <span className={`channel-pill-chip ${isFacebook ? "facebook" : ""}`}>
+                      {isFacebook && <IconFacebook size={12} />}
+                      <span>{isFacebook ? "Facebook" : "Canal indisponible"}</span>
                     </span>
                     {Boolean(post.listing_name) && (
                       <span className="mkt-listing-tag">{display(post.listing_name)}</span>
@@ -2201,37 +2201,15 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview, ca
 }
 
 function CalendarView({ data, setView }: { data: Record<string, unknown>; setView: (view: View) => void }) {
-  const [channelFilter, setChannelFilter] = useState("all");
-  const allPosts = ((data.posts ?? []) as Row[]).slice().sort((a, b) => String(a.scheduled_date ?? "9999").localeCompare(String(b.scheduled_date ?? "9999")));
-  
-  const posts = allPosts.filter((p) => {
-    if (channelFilter === "facebook") return String(p.channel ?? "").toLowerCase().includes("facebook");
-    if (channelFilter === "tiktok") return String(p.channel ?? "").toLowerCase().includes("tiktok");
-    return true;
-  });
+  const allPosts = ((data.posts ?? []) as Row[]).filter((post) => String(post.channel ?? "").toLowerCase() === "facebook").slice().sort((a, b) => String(a.scheduled_date ?? "9999").localeCompare(String(b.scheduled_date ?? "9999")));
 
   return <>
     <PageHeading
       eyebrow="STRATÉGIE ÉDITORIALE"
       title="Planning Éditorial"
-      description="Visualisez et organisez le calendrier de diffusion multi-canaux."
+      description="Visualisez et organisez le calendrier de diffusion Facebook."
       action={<button className="button button-primary mkt-hero-btn" onClick={() => setView("content")}>+ Nouveau contenu</button>}
     />
-
-    {/* Calendar Channel Filters */}
-    <div className="mkt-filter-bar">
-      <div className="filter-tabs mkt-filter-tabs">
-        <button className={`filter-tab ${channelFilter === "all" ? "active" : ""}`} onClick={() => setChannelFilter("all")}>
-          Tous les canaux ({allPosts.length})
-        </button>
-        <button className={`filter-tab ${channelFilter === "facebook" ? "active" : ""}`} onClick={() => setChannelFilter("facebook")}>
-          <IconFacebook size={13} /> Facebook ({allPosts.filter(p => String(p.channel).toLowerCase().includes("facebook")).length})
-        </button>
-        <button className={`filter-tab ${channelFilter === "tiktok" ? "active" : ""}`} onClick={() => setChannelFilter("tiktok")}>
-          <IconTiktok size={13} /> TikTok ({allPosts.filter(p => String(p.channel).toLowerCase().includes("tiktok")).length})
-        </button>
-      </div>
-    </div>
 
     <section className="panel mkt-panel">
       <div className="panel-heading">
@@ -2240,9 +2218,9 @@ function CalendarView({ data, setView }: { data: Record<string, unknown>; setVie
           <p className="muted">Publications triées par ordre de diffusion souhaitée</p>
         </div>
       </div>
-      {posts.length ? (
+      {allPosts.length ? (
         <div className="upcoming-list mkt-upcoming-list">
-          {posts.map((post) => <PostRow key={String(post.id)} post={post} />)}
+          {allPosts.map((post) => <PostRow key={String(post.id)} post={post} />)}
         </div>
       ) : (
         <Empty>Aucun contenu planifié pour ce canal. Utilisez le bouton "Nouveau contenu" pour programmer un post.</Empty>
@@ -2260,7 +2238,7 @@ function WorkflowsView({ data, request, mutate, busy, canEdit }: {
   const [form, setForm] = useState<Record<string, string | boolean>>({});
   const rows = (data[({ social: "social", groups: "groups", b2b: "b2b", reactivation: "reactivation", retargeting: "retargeting" } as Record<string, string>)[module]] ?? []) as Row[];
   const fields: Record<string, { key: string; label: string; type?: string; options?: string[] }[]> = {
-    social: [{ key: "channel", label: "Réseau", type: "select", options: ["facebook", "tiktok"] }, { key: "post_reference", label: "Référence du contenu" }, { key: "comment_summary", label: "Résumé anonymisé du commentaire", type: "textarea" }],
+    social: [{ key: "post_reference", label: "Référence du contenu" }, { key: "comment_summary", label: "Résumé anonymisé du commentaire", type: "textarea" }],
     groups: [{ key: "source_group", label: "Groupe source" }, { key: "city", label: "Ville" }, { key: "listing_type", label: "Type de logement" }, { key: "desired_date", label: "Date souhaitée", type: "date" }, { key: "guests", label: "Voyageurs", type: "number" }, { key: "request_summary", label: "Résumé anonymisé de la demande", type: "textarea" }],
     b2b: [{ key: "company", label: "Organisation" }, { key: "contact_name", label: "Nom du contact (facultatif)" }, { key: "email", label: "E-mail professionnel (facultatif)", type: "email" }, { key: "source", label: "Source autorisée" }, { key: "legal_basis", label: "Base de contact", type: "select", options: ["pending", "consent", "legitimate_interest"] }],
     reactivation: [{ key: "external_ref", label: "Référence pseudonymisée" }, { key: "last_booking_date", label: "Date du dernier séjour", type: "date" }, { key: "contact_basis", label: "Base de contact", type: "select", options: ["pending", "consent", "existing_customer"] }],
@@ -2275,6 +2253,7 @@ function WorkflowsView({ data, request, mutate, busy, canEdit }: {
       field.key,
       form[field.key] ?? (field.type === "select" ? field.options?.[0] : field.type === "checkbox" ? false : ""),
     ]));
+    if (module === "social") payload.channel = "facebook";
     if (module === "groups" && payload.guests) payload.guests = Number(payload.guests);
     void mutate(() => request(`/api/workflows/${module}`, "POST", payload), "Fiche ajoutée.")
       .then((saved) => { if (saved) setForm({}); });

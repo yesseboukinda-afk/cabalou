@@ -9,7 +9,7 @@ export type SiteAssistantDraft = {
   tone: string;
   audience: string;
   brief: string;
-  channel: "facebook" | "tiktok";
+  channel: "facebook";
 };
 
 export type SiteAssistantAction = {
@@ -221,7 +221,7 @@ export function SiteAssistant({
             {message.action.type === "open_content_create" && <strong>Ouvrir le formulaire de création de contenu</strong>}
             {message.action.type === "prepare_content" && <>
               <strong>Préparer les options du brouillon</strong>
-              <span>{message.action.content?.objective} · {message.action.content?.channel === "tiktok" ? "TikTok" : "Facebook"}</span>
+              <span>{message.action.content?.objective} · Facebook</span>
             </>}
             {message.action.type === "prepare_meta_post" && <>
               <strong>Ouvrir Veille Meta et préparer une publication</strong>
