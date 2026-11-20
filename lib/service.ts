@@ -141,6 +141,34 @@ export async function updateUser(actorId: number, userId: number, data: JsonObje
   } finally { await db.close(); }
 }
 
+export async function deleteUser(actorId: number, userId: number) {
+  if (actorId === userId) {
+    throw new HttpError(400, "Vous ne pouvez pas supprimer votre propre compte.");
+  }
+  const db = connectDatabase();
+  try {
+    await db.exec("BEGIN IMMEDIATE");
+    const row = await db.prepare(
+      "SELECT id, username, display_name, role, active, auth_user_id FROM users WHERE id=?",
+    ).get(userId) as { id: number; username: string; display_name: string; role: string; active: number; auth_user_id: string | null } | undefined;
+    if (!row) throw new HttpError(404, "Utilisateur introuvable.");
+    if (row.role === "admin" && row.active) {
+      const count = (await db.prepare(
+        "SELECT COUNT(*) AS count FROM users WHERE role='admin' AND active=1",
+      ).get() as { count: number }).count;
+      if (count <= 1) throw new HttpError(400, "Le dernier administrateur actif ne peut pas être supprimé.");
+    }
+    if (row.auth_user_id) await deleteSupabaseAuthUser(row.auth_user_id);
+    await db.prepare("DELETE FROM users WHERE id=?").run(userId);
+    await addAudit(db, actorId, "user.deleted", "user", userId, `username=${row.username}; role=${row.role}`);
+    await db.exec("COMMIT");
+    return { id: userId };
+  } catch (error) {
+    try { await db.exec("ROLLBACK"); } catch { /* transaction may already have ended */ }
+    throw error;
+  } finally { await db.close(); }
+}
+
 export async function listListings() {
   const db = connectDatabase();
   try {
@@ -209,6 +237,7 @@ export async function savePost(actorId: number, id: number | null, data: JsonObj
       throw new HttpError(400, "L’heure souhaitée doit être au format HH:MM.");
     }
   }
+
   let listingId: number | null = null;
   if (data.listing_id !== undefined && data.listing_id !== null && data.listing_id !== "") {
     listingId = Number(data.listing_id);

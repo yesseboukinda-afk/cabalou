@@ -546,7 +546,7 @@ export function CabalouApp() {
           {view === "workflows" && <WorkflowsView data={data} request={request} mutate={mutate} busy={busy} canEdit={canEdit} />}
           {view === "seo" && <SeoView data={data} request={request} mutate={mutate} busy={busy} canEdit={canEdit} canSync={canReview} />}
           {view === "reports" && <ReportsView data={data} request={request} mutate={mutate} busy={busy} canEdit={canEdit} onMonthChange={setReportPeriod} />}
-          {view === "users" && user.role === "admin" && <UsersView data={data} request={request} mutate={mutate} busy={busy} />}
+          {view === "users" && user.role === "admin" && <UsersView data={data} request={request} mutate={mutate} busy={busy} currentUserId={user.id} />}
           {view === "audit" && canAudit && <AuditView data={data} />}
           {view === "integrations" && <IntegrationsView data={data} request={request} mutate={mutate} busy={busy} isAdmin={user.role === "admin"} />}
         </div>
@@ -2330,7 +2330,7 @@ function CalendarView({ data, setView }: { data: Record<string, unknown>; setVie
             <article className="editorial-calendar-day" key={date}>
               <strong>{dayNumber}</strong>
               {dayPosts.map((post) => (
-                <button type="button" key={String(post.id)} className="editorial-calendar-post" onClick={() => setView("content")}>
+                <button type="button" key={String(post.id)} className={`editorial-calendar-post status-${String(post.status ?? "draft")}`} onClick={() => setView("content")}>
                   {post.scheduled_time ? `${String(post.scheduled_time)} · ` : ""}{display(post.title)}
                 </button>
               ))}
@@ -2674,7 +2674,7 @@ function ReportsView({ data, request, mutate, busy, canEdit, onMonthChange }: { 
   </>;
 }
 
-function UsersView({ data, request, mutate, busy }: { data: Record<string, unknown>; request: (url: string, method?: string, payload?: Payload) => Promise<Payload | null>; mutate: (operation: () => Promise<unknown>, success: string, target?: View) => Promise<boolean>; busy: boolean }) {
+function UsersView({ data, request, mutate, busy, currentUserId }: { data: Record<string, unknown>; request: (url: string, method?: string, payload?: Payload) => Promise<Payload | null>; mutate: (operation: () => Promise<unknown>, success: string, target?: View) => Promise<boolean>; busy: boolean; currentUserId: number }) {
   const users = (data.users ?? []) as Row[];
   const [form, setForm] = useState({ username: "", email: "", display_name: "", password: "", role: "operator" });
   async function create(event: FormEvent) {
@@ -2688,7 +2688,7 @@ function UsersView({ data, request, mutate, busy }: { data: Record<string, unkno
     <section className="panel mkt-panel"><div className="panel-heading"><div><h2>Ajouter un collaborateur</h2></div></div>
       <form className="form-grid" onSubmit={(event) => void create(event)}><label>Nom d’utilisateur<input required maxLength={80} autoComplete="username" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} /></label><label>Adresse e-mail<input type="email" autoComplete="email" required maxLength={254} value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label><label>Nom affiché<input required maxLength={80} value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} /></label><PasswordField id="new-user-password" label="Mot de passe" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} autoComplete="new-password" required /><label>Rôle attribué<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>{Object.entries(roleLabels).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label><button className="button button-primary" disabled={busy}>Créer l’utilisateur</button></form>
     </section>
-    <section className="panel mkt-panel"><div className="panel-heading"><div><h2>Membres de l'équipe</h2></div></div><div className="table-scroll"><table><thead><tr><th>Collaborateur</th><th>Rôle</th><th>Statut</th><th>Gestion</th></tr></thead><tbody>{users.map((item) => <tr key={String(item.id)}><td><strong>{display(item.display_name)}</strong><small className="table-sub">{display(item.username)}</small></td><td><select aria-label={`Rôle de ${item.username}`} value={String(item.role)} onChange={(event) => void mutate(() => request(`/api/users/${item.id}`, "PATCH", { role: event.target.value, active: Boolean(item.active) }), "Rôle mis à jour.", "users")}>{Object.entries(roleLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></td><td><span className={`mkt-kpi-badge ${item.active ? "green" : "neutral"}`}>{item.active ? "Actif" : "Désactivé"}</span></td><td><button className="text-button" disabled={busy} onClick={() => void mutate(() => request(`/api/users/${item.id}`, "PATCH", { role: item.role, active: !item.active }), "Accès mis à jour.", "users")}>{item.active ? "Désactiver" : "Réactiver"}</button></td></tr>)}</tbody></table></div></section>
+    <section className="panel mkt-panel"><div className="panel-heading"><div><h2>Membres de l'équipe</h2></div></div><div className="table-scroll"><table><thead><tr><th>Collaborateur</th><th>Rôle</th><th>Statut</th><th>Gestion</th></tr></thead><tbody>{users.map((item) => <tr key={String(item.id)}><td><strong>{display(item.display_name)}</strong><small className="table-sub">{display(item.username)}</small></td><td><select aria-label={`Rôle de ${item.username}`} value={String(item.role)} onChange={(event) => void mutate(() => request(`/api/users/${item.id}`, "PATCH", { role: event.target.value, active: Boolean(item.active) }), "Rôle mis à jour.", "users")}>{Object.entries(roleLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></td><td><span className={`mkt-kpi-badge ${item.active ? "green" : "neutral"}`}>{item.active ? "Actif" : "Désactivé"}</span></td><td><div className="button-row"><button className="text-button" disabled={busy} onClick={() => void mutate(() => request(`/api/users/${item.id}`, "PATCH", { role: item.role, active: !item.active }), "Accès mis à jour.", "users")}>{item.active ? "Désactiver" : "Réactiver"}</button><button className="text-button" disabled={busy || Number(item.id) === currentUserId} onClick={() => { if (window.confirm(`Supprimer définitivement le compte « ${display(item.display_name)} » ? Cette action supprimera aussi son accès Supabase Auth.`)) void mutate(() => request(`/api/users/${item.id}`, "DELETE"), "Utilisateur supprimé.", "users"); }}>Supprimer</button></div></td></tr>)}</tbody></table></div></section>
   </>;
 }
 

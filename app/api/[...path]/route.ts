@@ -7,7 +7,7 @@ import {
 import {
   auditEvents, dashboard, deletePost, deletePostImage, getPost, getPostImage, KPI_DEFINITIONS, latestIntegrationChecks,
   listListings, listPosts, listUsers, monthlyReport, recordAiGeneration, recordIntegrationCheck,
-  recordManualPublication, recordMetaPublication, replaceSearchConsoleMetrics, reviewPost, saveMonthlyReport, savePost, savePostImage, saveSeoMetric, seoMetrics,
+  recordManualPublication, recordMetaPublication, replaceSearchConsoleMetrics, reviewPost, saveMonthlyReport, savePost, savePostImage, saveSeoMetric, seoMetrics, deleteUser,
   submitPost, returnPostToDraft, updateUser,
 } from "../../../lib/service";
 import { createUser } from "../../../lib/service";
@@ -582,6 +582,10 @@ export async function DELETE(request: NextRequest) {
       return json(responseKey("comment", await deleteMetaComment(parts[3], ["admin", "marketing_manager"].includes(user.role))));
     }
     role(user, ROLES_CAN_EDIT);
+    if (parts[1] === "users" && parts.length === 3) {
+      role(user, ["admin"]);
+      return json(responseKey("user", await deleteUser(user.id, asId(parts[2]))));
+    }
     if (parts[1] === "posts" && parts.length === 3) {
       return json(responseKey("post", await deletePost(user.id, asId(parts[2]))));
     }

@@ -1508,6 +1508,17 @@ describe("migration Next Cabalou", () => {
     }), /e-mail est invalide/);
   });
 
+  it("supprime un utilisateur administrateurement et protège le compte courant", async () => {
+    await assert.rejects(service.deleteUser(adminId, adminId), /supprimer votre propre compte/);
+    await assert.rejects(service.deleteUser(managerId, adminId), /dernier administrateur actif/);
+    const operatorId = await service.createUser(adminId, {
+      username: "delete-me", email: "delete-me@example.test",
+      display_name: "Compte à supprimer", password: "DeleteMe123!", role: "operator",
+    });
+    assert.deepEqual(await service.deleteUser(adminId, operatorId), { id: operatorId });
+    assert.equal((await service.listUsers()).some((item) => item.id === operatorId), false);
+  });
+
   it("applique les transitions de validation et limite l’auto-approbation aux responsables marketing", async () => {
     const post = await service.savePost(adminId, null, {
       title: "Test Cabalou", channel: "facebook", body: "Brouillon", destination_url: "https://cabalou.net/",
