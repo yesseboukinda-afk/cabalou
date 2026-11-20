@@ -2511,8 +2511,15 @@ dialog[open]::backdrop {
 .site-assistant-form > button:disabled { opacity: .45; }
 .site-assistant-disclaimer { flex: 0 0 auto; margin: 0; padding: 0 12px 9px; background: #fff !important; color: #65676b !important; font-size: 9px; line-height: 1.4; }
 @media (max-width: 600px) {
-  .site-assistant-launcher { right: 14px; bottom: 14px; }
-  .site-assistant-panel { right: 8px; bottom: 74px; width: calc(100vw - 16px); height: min(620px, calc(100dvh - 90px)); max-height: calc(100dvh - 90px); }
+  .site-assistant-launcher { right: 14px; bottom: calc(14px + env(safe-area-inset-bottom)); }
+  .site-assistant-panel {
+    right: 8px;
+    bottom: calc(74px + env(safe-area-inset-bottom));
+    width: calc(100vw - 16px);
+    height: min(620px, calc(100dvh - 90px - env(safe-area-inset-top) - env(safe-area-inset-bottom)));
+    max-height: calc(100dvh - 90px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
+    min-height: 0;
+  }
 }
 
 
@@ -4622,5 +4629,86 @@ img, video, canvas, svg {
   }
   .login-footer {
     width: 100%;
+  }
+}
+
+@media (max-width: 600px) {
+  .button-row {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .button-row > .button,
+  .button-row > .text-button {
+    width: 100%;
+    min-width: 0;
+  }
+  .user-table-scroll {
+    overflow: visible;
+  }
+  .user-table {
+    min-width: 0 !important;
+    table-layout: fixed;
+  }
+  .user-table thead {
+    display: none;
+  }
+  .user-table tbody {
+    display: grid;
+    gap: 10px;
+  }
+  .user-table tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px 12px;
+    padding: 10px;
+    border: 1px solid rgba(222, 237, 228, .2);
+    border-radius: 9px;
+    background: #193536;
+  }
+  .user-table tbody tr:hover {
+    background: #193536 !important;
+  }
+  .user-table td {
+    display: grid;
+    min-width: 0;
+    gap: 5px;
+    padding: 7px 3px;
+    border: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .user-table td::before {
+    content: attr(data-label);
+    color: #bac9c4 !important;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+  }
+  .user-table td:first-child,
+  .user-table td:last-child {
+    grid-column: 1 / -1;
+  }
+  .user-table td:first-child strong {
+    color: #fff !important;
+    overflow-wrap: anywhere;
+  }
+  .user-table td:first-child .table-sub {
+    overflow-wrap: anywhere;
+  }
+  .user-table td select {
+    width: 100%;
+    min-width: 0;
+  }
+  .user-table-actions {
+    width: 100%;
+    margin: 0;
+  }
+  .user-table-actions > .text-button {
+    padding: 8px 6px;
+    border: 1px solid rgba(222, 237, 228, .2);
+    border-radius: 6px;
+    overflow-wrap: anywhere;
   }
 }
