@@ -196,7 +196,7 @@ function validateAction(value: unknown, allowedViews: ChatView[], role: string):
     return { type: "none", view: null, content: null, meta_post: null, operation: null };
   }
   const actionType = typeof action.type === "string" ? ` « ${action.type} »` : "";
-  throw new HttpError(502, `L’action${actionType} proposée est incompatible avec les autorisations ou les paramètres attendus. Reformulez la demande.`);
+  throw new HttpError(403, `L’action${actionType} proposée est incompatible avec les autorisations ou les paramètres attendus. Reformulez la demande.`);
 }
 
 function parseReply(payload: Record<string, unknown>, provider: AiProviderConfig): { reply: string; action: unknown } {
@@ -329,11 +329,20 @@ export async function chatWithSiteAssistant(data: Record<string, unknown>, role:
   };
   const summary = await dashboard();
   const seo = summary.seo as { clicks: number | null; impressions: number | null; ctr: number | null; latest_date: string | null };
-  const today = new Date().toISOString().slice(0, 10);
+  const dateParts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Africa/Libreville",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const datePart = (type: string) => dateParts.find((part) => part.type === type)?.value;
+  const today = `${datePart("year")}-${datePart("month")}-${datePart("day")}`;
   const cabalouContext = [
-    `Date du jour (UTC) : ${today}.`,
-    "Cabalou est une marque gabonaise. Utilise le contexte du Gabon : pas d'hiver, pas d'offres saisonnières nordiques.",
-    `Données SEO disponibles : ${seo.clicks ?? 0} clic(s), ${seo.impressions ?? 0} impression(s), CTR ${typeof seo.ctr === "number" ? `${(seo.ctr * 100).toFixed(1)} %` : "non disponible"}, dernière date ${seo.latest_date ?? "non disponible"}.`,
+    `Date du jour au Gabon (Africa/Libreville) : ${today}.`,
+    `Écran actuellement ouvert : ${viewLabels[currentView]}.`,
+    "Cabalou est une marque gabonaise. Cabalou Marketing OS sert à gérer les brouillons et validations de contenu Facebook, le calendrier éditorial, la veille Meta, les parcours métier, le suivi SEO, les rapports et les intégrations.",
+    "Pour les idées marketing, tiens compte du Gabon et de l’Afrique centrale : ne propose pas d’hiver ni de saisons nordiques. N’invente jamais de caractéristiques, prix, disponibilités ou services des hébergements Cabalou.",
+    `Résumé SEO disponible${seo.latest_date ? ` (dernière date : ${seo.latest_date})` : ""} : ${seo.clicks ?? "clics non disponibles"} clic(s), ${seo.impressions ?? "impressions non disponibles"} impression(s), CTR ${typeof seo.ctr === "number" ? `${(seo.ctr * 100).toFixed(1)} %` : "non disponible"}.`,
   ].join("\n");
   const instructions = [
     "Tu es l’assistant conversationnel de Cabalou. L’utilisateur peut te poser toute sorte de questions générales ou sur l’application.",
@@ -345,7 +354,7 @@ export async function chatWithSiteAssistant(data: Record<string, unknown>, role:
     "Pour une question ou une conversation qui ne demande aucune action dans l’application, réponds normalement et utilise action.type=none avec view, content, meta_post et operation à null. Ne transforme pas une question générale en navigation ou en opération.",
     "La génération d’images n’est pas disponible dans Cabalou. Si on te demande si tu peux générer une image, réponds clairement que tu ne peux pas créer l’image ici, mais que tu peux aider à rédiger un prompt pour un outil d’image; utilise action.type=none.",
     "Pour ouvrir un écran, utilise toujours action.type=navigate avec view égal à l’identifiant exact d’une page autorisée; n’utilise jamais action.type=open.",
-    "Tu ne vois aucune donnée réelle du site et ne dois jamais prétendre avoir consulté, modifié ou exécuté une opération ni avoir accès à des informations en temps réel.",
+    "Tu ne peux utiliser que les informations de contexte ci-dessus et les messages fournis. N’affirme pas avoir consulté d’autres données en temps réel, modifié ou exécuté une opération.",
     "Tu peux proposer une navigation, préparer un brouillon local ou une seule opération de l’application à la fois. Toute écriture ou opération réelle attend une confirmation explicite dans l’interface.",
     "Ne prétends jamais qu’une opération a été effectuée avant la confirmation. Ne planifie pas plusieurs opérations dans une action et ne demande jamais de mot de passe, clé API, jeton, coordonnées client ou autre secret.",
     "N’invente jamais d’identifiant, de données de formulaire, de contenu ou de faits. Si un identifiant ou un champ requis manque, pose une question au lieu de produire une opération incomplète.",
@@ -412,21 +421,26 @@ export async function chatWithSiteAssistant(data: Record<string, unknown>, role:
 
   const messages = [{ role: "system" as const, content: instructions }, ...history, { role: "user" as const, content: data.message.trim() }];
   let parsed: { reply: string; action: unknown } | undefined;
+  let validatedAction: AssistantAction | undefined;
   const unavailableMessage = "Je ne peux pas répondre pour le moment. Réessaie dans un instant.";
   for (const [index, candidate] of providers.entries()) {
     provider = candidate;
     try {
-      parsed = await requestAssistantReply(provider, messages, schema);
+      const candidateReply = await requestAssistantReply(provider, messages, schema);
+      const reply = candidateReply.reply.trim();
+      if (!reply || reply.length > 2500) throw new HttpError(502, "L’assistant a retourné une réponse trop longue ou vide.");
+      if (containsPersonalContact(reply)) throw new HttpError(502, "La réponse contient une coordonnée ou un secret. Reformulez votre demande.");
+      validatedAction = validateAction(candidateReply.action, allowedViews, role);
+      parsed = { ...candidateReply, reply };
       break;
     } catch (error) {
-      if (!(error instanceof AssistantProviderFailure)) throw error;
-      if (!error.canFallback || index === providers.length - 1) throw new HttpError(503, unavailableMessage);
+      const canFallback = error instanceof AssistantProviderFailure
+        ? error.canFallback
+        : error instanceof HttpError && error.status === 502;
+      if (!canFallback) throw error;
+      if (index === providers.length - 1) throw new HttpError(503, unavailableMessage);
     }
   }
-  if (!parsed) throw new HttpError(503, unavailableMessage);
-  const reply = parsed.reply.trim();
-  if (!reply || reply.length > 2500) throw new HttpError(502, "L’assistant a retourné une réponse trop longue ou vide.");
-  if (containsPersonalContact(reply)) throw new HttpError(502, "La réponse contient une coordonnée ou un secret. Reformulez votre demande.");
-  const action = validateAction(parsed.action, allowedViews, role);
-  return { reply, action };
+  if (!parsed || !validatedAction) throw new HttpError(503, unavailableMessage);
+  return { reply: parsed.reply, action: validatedAction };
 }

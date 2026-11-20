@@ -121,8 +121,10 @@ export function SiteAssistant({
         action: action as SiteAssistantAction,
       }]);
     } catch (reason) {
+      setMessages((current) => current.slice(0, -1));
       setInput(message);
-      setError(reason instanceof Error ? reason.message : "Impossible de joindre l’assistant.");
+      const errorMessage = reason instanceof Error ? reason.message : "Impossible de joindre l’assistant.";
+      setError(`${errorMessage} Votre question est conservée dans le champ.`);
     } finally {
       setSending(false);
     }
@@ -278,6 +280,7 @@ export function SiteAssistant({
           value={input}
           maxLength={2000}
           rows={2}
+          disabled={sending}
           placeholder="Écrivez votre demande…"
           onChange={(event) => setInput(event.target.value)}
           onKeyDown={(event) => {

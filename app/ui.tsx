@@ -2325,9 +2325,16 @@ function CalendarView({ data, setView }: { data: Record<string, unknown>; setVie
       <div className={`editorial-calendar ${calendarMode}`}>
         {visibleDates.map((date) => {
           const dayPosts = allPosts.filter((post) => String(post.scheduled_date ?? "") === date);
+          const imagePost = dayPosts.find((post) => Boolean(post.has_image));
           const dayNumber = Number(date.slice(-2));
           return (
-            <article className="editorial-calendar-day" key={date}>
+            <article
+              className={`editorial-calendar-day${imagePost ? " has-image" : ""}`}
+              key={date}
+              style={imagePost ? {
+                backgroundImage: `linear-gradient(rgba(7, 24, 24, .72), rgba(7, 24, 24, .72)), url("/api/posts/${encodeURIComponent(String(imagePost.id))}/image")`,
+              } : undefined}
+            >
               <strong>{dayNumber}</strong>
               {dayPosts.map((post) => (
                 <button type="button" key={String(post.id)} className={`editorial-calendar-post status-${String(post.status ?? "draft")}`} onClick={() => setView("content")}>
