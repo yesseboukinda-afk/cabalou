@@ -175,7 +175,7 @@ export function MetaPostComposer({
       </div>)}
     </div>}
     <div className="meta-composer-attachment">
-      <strong>Ajouter des elements </strong>
+      <strong>Ajouter des éléments</strong>
       <label className="meta-composer-media-action">
         <span className="meta-composer-media-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" focusable="false"><path d="M4 5.5h3l1.5-2h7l1.5 2h3A2 2 0 0 1 22 7.5v11a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-11a2 2 0 0 1 2-2Zm8 3a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9Zm0 2a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5Z" /></svg>

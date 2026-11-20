@@ -8,7 +8,6 @@ export const KPI_DEFINITIONS = [
     { key: "social_publications", label: "Publications réalisées", kind: "count" },
     { key: "social_views", label: "Vues", kind: "count" },
     { key: "social_followers", label: "Abonnés", kind: "count" },
-    { key: "social_whatsapp_messages", label: "Messages WhatsApp générés", kind: "count" },
   ] },
   { id: "groups", label: "Groupes Facebook", metrics: [
     { key: "groups_requests", label: "Demandes repérées", kind: "count" },
@@ -158,7 +157,7 @@ export async function listListings() {
 
 const POST_SELECT = `
   SELECT p.id, p.title, p.channel, p.body, p.destination_url, p.listing_id,
-         p.scheduled_date, p.status, p.created_by, p.updated_by, p.approved_by,
+         p.scheduled_date, p.scheduled_time, p.status, p.created_by, p.updated_by, p.approved_by,
          p.approved_at, p.rejection_reason, p.published_by, p.published_at,
          p.published_url, p.version, p.created_at, p.updated_at, p.is_demo,
          p.image_mime, (p.image_data IS NOT NULL) AS has_image,
@@ -198,12 +197,16 @@ export async function savePost(actorId: number, id: number | null, data: JsonObj
   const body = text(data, "body", "texte", 5000, false);
   const destination = validateHttpsUrl(data.destination_url ?? "https://cabalou.net/", "Le lien de destination");
   const scheduledDate = text(data, "scheduled_date", "date souhaitée", 10, false) || null;
+  const scheduledTime = text(data, "scheduled_time", "heure souhaitée", 5, false) || null;
   if (channel !== "facebook") throw new HttpError(400, "Le canal doit être Facebook.");
   if (scheduledDate) {
     const parsedDate = new Date(`${scheduledDate}T00:00:00Z`);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(scheduledDate)
       || Number.isNaN(parsedDate.getTime()) || parsedDate.toISOString().slice(0, 10) !== scheduledDate) {
       throw new HttpError(400, "La date souhaitée doit être au format AAAA-MM-JJ.");
+    }
+    if (scheduledTime && !/^([01]\d|2[0-3]):[0-5]\d$/.test(scheduledTime)) {
+      throw new HttpError(400, "L’heure souhaitée doit être au format HH:MM.");
     }
   }
   let listingId: number | null = null;
@@ -222,10 +225,10 @@ export async function savePost(actorId: number, id: number | null, data: JsonObj
     const now = utcNow();
     if (id === null) {
       const result = await db.prepare(
-        `INSERT INTO posts (title, channel, body, destination_url, listing_id, scheduled_date,
+        `INSERT INTO posts (title, channel, body, destination_url, listing_id, scheduled_date, scheduled_time,
          status, created_by, updated_by, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`,
-      ).run(title, channel, body, destination, listingId, scheduledDate, actorId, actorId, now, now);
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)`,
+      ).run(title, channel, body, destination, listingId, scheduledDate, scheduledTime, actorId, actorId, now, now);
       const postId = Number(result.lastInsertRowid);
       await addAudit(db, actorId, "post.created", "post", postId);
       return await getPost(postId);
@@ -238,9 +241,9 @@ export async function savePost(actorId: number, id: number | null, data: JsonObj
     const newStatus = ["pending", "approved"].includes(current.status) ? "draft" : current.status;
     await db.prepare(
       `UPDATE posts SET title=?, channel=?, body=?, destination_url=?, listing_id=?,
-       scheduled_date=?, status=?, updated_by=?, approved_by=NULL, approved_at=NULL,
+       scheduled_date=?, scheduled_time=?, status=?, updated_by=?, approved_by=NULL, approved_at=NULL,
        rejection_reason=NULL, version=version+1, updated_at=? WHERE id=?`,
-    ).run(title, channel, body, destination, listingId, scheduledDate, newStatus, actorId, now, id);
+    ).run(title, channel, body, destination, listingId, scheduledDate, scheduledTime, newStatus, actorId, now, id);
     await addAudit(db, actorId, "post.updated", "post", id);
     return await getPost(id);
   } finally { await db.close(); }
@@ -255,8 +258,8 @@ export async function deletePost(actorId: number, id: number) {
         "SELECT status FROM posts WHERE id=? AND is_demo=0",
       ).get(id) as { status: string } | undefined;
       if (!row) throw new HttpError(404, "Contenu introuvable.");
-      if (row.status !== "draft" && row.status !== "rejected") {
-        throw new HttpError(400, "Seuls les brouillons ou contenus rejetés peuvent être supprimés.");
+      if (!["draft", "rejected", "pending"].includes(row.status)) {
+        throw new HttpError(400, "Seuls les brouillons, les contenus rejetés ou soumis à validation peuvent être supprimés.");
       }
       await db.prepare("DELETE FROM posts WHERE id=? AND is_demo=0").run(id);
       await addAudit(db, actorId, "post.deleted", "post", id);
@@ -272,11 +275,29 @@ export async function deletePost(actorId: number, id: number) {
 export async function submitPost(actorId: number, id: number) {
   const db = connectDatabase();
   try {
-    const row = await db.prepare("SELECT status FROM posts WHERE id=? AND is_demo=0").get(id) as { status: string } | undefined;
+    const row = await db.prepare("SELECT status, scheduled_date, image_data FROM posts WHERE id=? AND is_demo=0").get(id) as { status: string; scheduled_date: string | null; image_data: Uint8Array | null } | undefined;
     if (!row) throw new HttpError(404, "Contenu introuvable.");
     if (!["draft", "rejected"].includes(row.status)) throw new HttpError(400, "Seul un brouillon ou un contenu rejeté peut être soumis.");
+    if (!row.scheduled_date) throw new HttpError(400, "Définissez une date de diffusion avant de soumettre le contenu.");
+    if (!row.image_data) throw new HttpError(400, "Ajoutez une photo avant de soumettre le contenu.");
     await db.prepare("UPDATE posts SET status='pending', rejection_reason=NULL, updated_by=?, updated_at=? WHERE id=?").run(actorId, utcNow(), id);
     await addAudit(db, actorId, "post.submitted", "post", id);
+    return await getPost(id);
+  } finally { await db.close(); }
+}
+
+export async function returnPostToDraft(actorId: number, id: number) {
+  const db = connectDatabase();
+  try {
+    const row = await db.prepare("SELECT status FROM posts WHERE id=? AND is_demo=0").get(id) as { status: string } | undefined;
+    if (!row) throw new HttpError(404, "Contenu introuvable.");
+    if (!["pending", "approved", "rejected"].includes(row.status)) {
+      throw new HttpError(400, "Ce contenu ne peut pas être remis en brouillon.");
+    }
+    await db.prepare(`UPDATE posts SET status='draft', approved_by=NULL, approved_at=NULL,
+      rejection_reason=NULL, updated_by=?, updated_at=?, version=version+1 WHERE id=?`)
+      .run(actorId, utcNow(), id);
+    await addAudit(db, actorId, "post.returned_to_draft", "post", id);
     return await getPost(id);
   } finally { await db.close(); }
 }
@@ -289,7 +310,9 @@ export async function reviewPost(actorId: number, role: Role, id: number, approv
     const row = await db.prepare("SELECT status, created_by FROM posts WHERE id=? AND is_demo=0").get(id) as { status: string; created_by: number } | undefined;
     if (!row) throw new HttpError(404, "Contenu introuvable.");
     if (row.status !== "pending") throw new HttpError(400, "Le contenu n’est pas en attente de validation.");
-    if (row.created_by === actorId) throw new HttpError(403, "Le créateur ne peut pas approuver son propre contenu.");
+    if (role === "marketing_manager" && row.created_by === actorId) {
+      throw new HttpError(403, "Le créateur ne peut pas approuver son propre contenu.");
+    }
     const now = utcNow();
     if (approve) {
       await db.prepare(`UPDATE posts SET status='approved', approved_by=?, approved_at=?,
@@ -316,6 +339,24 @@ export async function recordManualPublication(actorId: number, id: number, value
     await db.prepare(`UPDATE posts SET status='published_manual', published_by=?, published_at=?,
       published_url=?, updated_by=?, updated_at=? WHERE id=?`).run(actorId, now, url, actorId, now, id);
     await addAudit(db, actorId, "post.published_manual", "post", id);
+    return await getPost(id);
+  } finally { await db.close(); }
+}
+
+export async function recordMetaPublication(actorId: number, id: number, scheduled: boolean) {
+  const db = connectDatabase();
+  try {
+    const row = await db.prepare("SELECT status FROM posts WHERE id=? AND is_demo=0").get(id) as { status: string } | undefined;
+    if (!row) throw new HttpError(404, "Contenu introuvable.");
+    if (row.status !== "approved") throw new HttpError(400, "Seul un contenu approuvé peut être publié.");
+    const now = utcNow();
+    if (!scheduled) {
+      await db.prepare(`UPDATE posts SET status='published_manual', published_by=?, published_at=?,
+        updated_by=?, updated_at=? WHERE id=?`).run(actorId, now, actorId, now, id);
+    } else {
+      await db.prepare("UPDATE posts SET updated_by=?, updated_at=? WHERE id=?").run(actorId, now, id);
+    }
+    await addAudit(db, actorId, scheduled ? "post.scheduled_meta" : "post.published_meta", "post", id);
     return await getPost(id);
   } finally { await db.close(); }
 }
@@ -372,8 +413,9 @@ export async function dashboard() {
       `SELECT SUM(clicks) AS clicks, SUM(impressions) AS impressions,
        CASE WHEN SUM(impressions)>0 THEN CAST(SUM(clicks)*1.0/SUM(impressions) AS REAL) ELSE NULL END AS ctr,
        CASE WHEN SUM(impressions)>0 THEN SUM(average_position*impressions)/SUM(impressions) ELSE NULL END AS average_position,
-       MAX(metric_date) AS latest_date FROM seo_metrics WHERE source!='demo'`,
-    ).get();
+       MAX(metric_date) AS latest_date
+       FROM seo_search_console_metrics`,
+    ).get() as { clicks: number | null; impressions: number | null; ctr: number | null; average_position: number | null; latest_date: string | null } | undefined;
     return {
       posts: counts,
       pending_approvals: counts.pending ?? 0,
@@ -512,10 +554,71 @@ export async function monthlyReport(period: unknown) {
     const latest = rows.reduce<{ source_note: string; updated_at: string } | null>(
       (prev, row) => !prev || row.updated_at > prev.updated_at ? row : prev, null,
     );
+    const manualMetrics = Object.fromEntries(rows.map((row) => [row.metric_key, row.value]));
+    const start = `${period}-01`;
+    const endDate = new Date(`${period}-01T00:00:00Z`);
+    endDate.setUTCMonth(endDate.getUTCMonth() + 1);
+    endDate.setUTCDate(0);
+    const end = endDate.toISOString().slice(0, 10);
+    const seo = await db.prepare(
+      `SELECT COALESCE(SUM(clicks), 0) AS clicks,
+        CASE WHEN SUM(impressions)>0 THEN SUM(average_position*impressions)/SUM(impressions) ELSE NULL END AS average_position
+       FROM seo_search_console_metrics
+       WHERE metric_date BETWEEN ? AND ?`,
+    ).get(start, end) as { clicks: number; average_position: number | null };
+    const publications = await db.prepare(
+      `SELECT COUNT(*) AS count FROM posts
+       WHERE status='published_manual' AND published_at BETWEEN ? AND ?`,
+    ).get(`${period}-01T00:00:00.000Z`, `${period}-31T23:59:59.999Z`) as { count: number };
+    const automaticMetrics: Record<string, number> = {};
+    if (seo.clicks > 0) automaticMetrics.google_organic_visits = seo.clicks;
+    if (typeof seo.average_position === "number") automaticMetrics.google_average_position = seo.average_position;
+    if (publications.count > 0) automaticMetrics.social_publications = publications.count;
+    if (process.env.META_PAGE_ID && process.env.META_PAGE_ACCESS_TOKEN) {
+      try {
+        const endDate = new Date(`${period}-01T00:00:00Z`);
+        endDate.setUTCMonth(endDate.getUTCMonth() + 1);
+        endDate.setUTCDate(0);
+        const end = Math.floor(endDate.getTime() / 1000);
+        const start = Math.floor(new Date(`${period}-01T00:00:00Z`).getTime() / 1000);
+        const query = new URLSearchParams({
+          metric: "page_views,page_fans",
+          period: "day",
+          since: String(start),
+          until: String(end),
+        });
+        const response = await fetch(
+          `https://graph.facebook.com/v27.0/${encodeURIComponent(process.env.META_PAGE_ID)}/insights?${query}`,
+          {
+            headers: { Authorization: `Bearer ${process.env.META_PAGE_ACCESS_TOKEN}` },
+            signal: AbortSignal.timeout(12_000),
+          },
+        );
+        if (response.ok) {
+          const payload = await response.json() as { data?: Array<{ name?: string; values?: Array<{ value?: number }> }> };
+          const metricsData = Array.isArray(payload.data) ? payload.data : [];
+          const views = metricsData.find((metric) => metric.name === "page_views");
+          if (views) {
+            const totalViews = (views.values ?? []).reduce((sum, item) => sum + (typeof item.value === "number" ? item.value : 0), 0);
+            if (totalViews > 0) automaticMetrics.social_views = totalViews;
+          }
+          const fans = metricsData.find((metric) => metric.name === "page_fans");
+          if (fans) {
+            const latest = [...(fans.values ?? [])].reverse().find((item) => typeof item.value === "number");
+            if (latest?.value !== undefined) automaticMetrics.social_followers = latest.value;
+          }
+        }
+      } catch {
+        // Les statistiques Meta indisponibles restent optionnelles dans le rapport.
+      }
+    }
+    const metrics = { ...automaticMetrics, ...manualMetrics };
+    const sourceParts = ["Meta / Search Console"];
+    if (latest?.source_note) sourceParts.push(latest.source_note);
     return {
       period,
-      metrics: Object.fromEntries(rows.map((row) => [row.metric_key, row.value])),
-      source_note: latest?.source_note ?? "",
+      metrics,
+      source_note: sourceParts.join(" · "),
       updated_at: latest?.updated_at ?? null,
     };
   } finally { await db.close(); }

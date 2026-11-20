@@ -1,5 +1,6 @@
 import { HttpError } from "./security";
 import { aiProviderCascade, aiProviderError, type AiProviderConfig } from "./ai-provider";
+import { dashboard } from "./service";
 const CHAT_VIEWS = ["dashboard", "content", "calendar", "comments", "workflows", "seo", "reports", "users", "audit", "integrations"] as const;
 type ChatView = typeof CHAT_VIEWS[number];
 type ChatRole = "user" | "assistant";
@@ -248,7 +249,7 @@ async function requestAssistantReply(
           : { type: "json_object" },
         max_tokens: 1000,
       }),
-      signal: AbortSignal.timeout(20_000),
+      signal: AbortSignal.timeout(30_000),
     });
   } catch {
     throw new AssistantProviderFailure(
@@ -326,8 +327,17 @@ export async function chatWithSiteAssistant(data: Record<string, unknown>, role:
     audit: "Journal d’activité",
     integrations: "Intégrations",
   };
+  const summary = await dashboard();
+  const seo = summary.seo as { clicks: number | null; impressions: number | null; ctr: number | null; latest_date: string | null };
+  const today = new Date().toISOString().slice(0, 10);
+  const cabalouContext = [
+    `Date du jour (UTC) : ${today}.`,
+    "Cabalou est une marque gabonaise. Utilise le contexte du Gabon : pas d'hiver, pas d'offres saisonnières nordiques.",
+    `Données SEO disponibles : ${seo.clicks ?? 0} clic(s), ${seo.impressions ?? 0} impression(s), CTR ${typeof seo.ctr === "number" ? `${(seo.ctr * 100).toFixed(1)} %` : "non disponible"}, dernière date ${seo.latest_date ?? "non disponible"}.`,
+  ].join("\n");
   const instructions = [
     "Tu es l’assistant conversationnel de Cabalou. L’utilisateur peut te poser toute sorte de questions générales ou sur l’application.",
+    cabalouContext,
     "Adopte le ton d’un interlocuteur humain, attentif et naturel, sans familiarité forcée ni formules répétitives. Réponds dans la langue de l’utilisateur, en français par défaut. Adapte le ton, la forme et la longueur à sa demande : une réponse directe pour une question simple, une explication structurée pour une demande complexe, et le format demandé lorsqu’il est pertinent.",
     "Pour répondre, examine soigneusement la demande, le contexte et les échanges précédents; vérifie la cohérence de ta réponse et distingue les faits des hypothèses. Pour les problèmes complexes, donne la conclusion et les raisons utiles sans exposer de raisonnement interne détaillé. Si une demande est ambiguë ou manque d’information essentielle, pose une question de clarification précise au lieu de deviner. Si tu n’es pas sûr, dis-le clairement.",
     "Pour les questions générales, réponds avec tes connaissances et aide sur des sujets variés (explications, conseils, idées, rédaction, traduction ou analyse). Pour les questions sur Cabalou, utilise uniquement les informations fournies ici et dans la conversation.",

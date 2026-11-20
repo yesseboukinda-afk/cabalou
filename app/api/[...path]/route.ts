@@ -5,10 +5,10 @@ import {
   clearSessionCookie, recordLoginFailure, ROLES_CAN_EDIT, type User,
 } from "../../../lib/security";
 import {
-  auditEvents, dashboard, deletePost, deletePostImage, getPostImage, KPI_DEFINITIONS, latestIntegrationChecks,
+  auditEvents, dashboard, deletePost, deletePostImage, getPost, getPostImage, KPI_DEFINITIONS, latestIntegrationChecks,
   listListings, listPosts, listUsers, monthlyReport, recordAiGeneration, recordIntegrationCheck,
-  recordManualPublication, replaceSearchConsoleMetrics, reviewPost, saveMonthlyReport, savePost, savePostImage, saveSeoMetric, seoMetrics,
-  submitPost, updateUser,
+  recordManualPublication, recordMetaPublication, replaceSearchConsoleMetrics, reviewPost, saveMonthlyReport, savePost, savePostImage, saveSeoMetric, seoMetrics,
+  submitPost, returnPostToDraft, updateUser,
 } from "../../../lib/service";
 import { createUser } from "../../../lib/service";
 import {
@@ -477,6 +477,32 @@ export async function POST(request: NextRequest) {
     if (parts[1] === "posts" && parts[3] === "submit" && parts.length === 4) {
       role(user, ROLES_CAN_EDIT);
       return json(responseKey("post", await submitPost(user.id, asId(parts[2]))));
+    }
+    if (parts[1] === "posts" && parts[3] === "draft" && parts.length === 4) {
+      role(user, ROLES_CAN_EDIT);
+      return json(responseKey("post", await returnPostToDraft(user.id, asId(parts[2]))));
+    }
+    if (parts[1] === "posts" && parts[3] === "publish-meta" && parts.length === 4) {
+      role(user, ROLES_CAN_EDIT);
+      const id = asId(parts[2]);
+      const post = await getPost(id);
+      if (!post) throw new HttpError(404, "Contenu introuvable.");
+      if (post.status !== "approved") throw new HttpError(400, "Seul un contenu approuvé peut être publié.");
+      const image = await getPostImage(id);
+      const scheduledAt = data.scheduled_publish_time
+        ?? (post.scheduled_date
+          ? `${post.scheduled_date}T${typeof post.scheduled_time === "string" && post.scheduled_time ? post.scheduled_time : "10:00"}:00+01:00`
+          : undefined);
+      if (image) {
+        await publishMetaPageMedia(
+          post.body,
+          { name: `cabalou-${id}.jpg`, type: "image/jpeg", bytes: image.data },
+          scheduledAt,
+        );
+      } else {
+        await publishMetaPagePost(post.body, scheduledAt);
+      }
+      return json(responseKey("post", await recordMetaPublication(user.id, id, Boolean(scheduledAt))));
     }
     if (parts[1] === "posts" && parts[3] === "approve" && parts.length === 4) {
       return json(responseKey("post", await reviewPost(user.id, user.role, asId(parts[2]), true)));

@@ -171,6 +171,7 @@ export async function initializeDatabase(): Promise<void> {
         destination_url TEXT NOT NULL DEFAULT 'https://cabalou.net/',
         listing_id INTEGER REFERENCES listings(id) ON DELETE SET NULL,
         scheduled_date TEXT,
+        scheduled_time TEXT,
         status TEXT NOT NULL CHECK (status IN
           ('draft', 'pending', 'approved', 'rejected', 'published_manual')),
         created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -311,6 +312,7 @@ export async function initializeDatabase(): Promise<void> {
         ALTER TABLE posts ADD COLUMN IF NOT EXISTS is_demo INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE posts ADD COLUMN IF NOT EXISTS image_data BYTEA;
         ALTER TABLE posts ADD COLUMN IF NOT EXISTS image_mime TEXT;
+        ALTER TABLE posts ADD COLUMN IF NOT EXISTS scheduled_time TEXT;
       `);
     } else {
       const userColumns = await db.prepare("PRAGMA table_info(users)").all() as { name: string }[];
@@ -336,6 +338,9 @@ export async function initializeDatabase(): Promise<void> {
       }
       if (!postColumns.some((column) => column.name === "image_mime")) {
         await db.exec("ALTER TABLE posts ADD COLUMN image_mime TEXT");
+      }
+      if (!postColumns.some((column) => column.name === "scheduled_time")) {
+        await db.exec("ALTER TABLE posts ADD COLUMN scheduled_time TEXT");
       }
     }
     await db.prepare(

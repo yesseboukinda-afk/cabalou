@@ -43,15 +43,10 @@ BEGIN
           display_name = 'Admin',
           role = 'admin',
           auth_user_id = auth_id::TEXT,
-          active = 1
+          active = 0
       WHERE id = cabalou_user_id;
   ELSE
-    INSERT INTO public.users
-      (username, email, display_name, role, salt, password_hash, auth_user_id, active, created_at)
-    VALUES
-      ('Admin', auth_email, 'Admin', 'admin', decode(repeat('00', 16), 'hex'),
-       decode(repeat('00', 32), 'hex'), auth_id::TEXT, 1,
-       to_char(CURRENT_TIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"+00:00"'));
+    RAISE NOTICE 'Compte de test trouvé dans Auth mais aucun profil Cabalou correspondant: aucun compte n’est créé.';
   END IF;
 END
 $$;

@@ -157,7 +157,7 @@ async function cropPhoto(file: File, aspect: string): Promise<File> {
 }
 
 function dateLabel(value: unknown) {
-  if (typeof value !== "string" || !value) return "Sans date";
+  if (typeof value !== "string" || !value) return "Date non définie";
   const parsed = new Date(value.length === 10 ? `${value}T00:00:00` : value);
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString("fr-FR");
 }
@@ -401,18 +401,14 @@ export function CabalouApp() {
         <h1>Bienvenue.</h1>
         <p className="muted">Accès réservé aux utilisateurs créés par l’administrateur.</p>
         <form className="stack-form" onSubmit={login}>
-          <label>Nom d’utilisateur<input value={loginName} onChange={(event) => setLoginName(event.target.value)} autoComplete="username" required maxLength={80} /></label>
+          <label htmlFor="login-username">Nom d’utilisateur</label>
+          <input id="login-username" value={loginName} onChange={(event) => setLoginName(event.target.value)} autoComplete="username" required maxLength={80} />
           <PasswordField id="login-password" label="Mot de passe" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} autoComplete="current-password" required />
           <button className="button button-primary full-width" disabled={busy}>Se connecter</button>
           <Alert error={error} />
         </form>
         <footer className="login-footer">
           <span>© {new Date().getFullYear()} Cabalou</span>
-          <a href="https://github.com/yesseboukinda-afk" target="_blank" rel="noreferrer" aria-label="Profil GitHub du développeur">
-            <svg aria-hidden="true" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M12 .5a12 12 0 0 0-3.79 23.39c.6.11.82-.26.82-.58v-2.05c-3.34.73-4.04-1.42-4.04-1.42-.55-1.39-1.33-1.76-1.33-1.76-1.09-.75.08-.73.08-.73 1.2.08 1.84 1.23 1.84 1.23 1.07 1.84 2.81 1.31 3.49 1 .11-.78.42-1.31.76-1.61-2.67-.3-5.47-1.34-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.1-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.29-1.55 3.29-1.23 3.29-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.81 5.63-5.48 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.69.83.57A12 12 0 0 0 12 .5Z" />
-            </svg>
-          </a>
         </footer>
       </section>
       {busy && (
@@ -616,13 +612,13 @@ function MetaCommentsView({
   const fetchedAt = data.meta_comments_fetched_at;
   const sentimentEntries: { comment: Row; post: Row; parentAuthor?: string; sentiment: CommentSentiment }[] = posts.flatMap((post) => (
     Array.isArray(post.comments) ? post.comments as Row[] : []
-  ).flatMap((comment) => [
+  ).flatMap((comment) => comment.is_page_comment === true ? [] : [
     {
       comment,
       post,
       sentiment: classifyCommentSentiment(String(comment.message ?? "")),
     },
-    ...(Array.isArray(comment.replies) ? comment.replies as Row[] : []).map((reply) => ({
+    ...(Array.isArray(comment.replies) ? (comment.replies as Row[]).filter((reply) => reply.is_page_comment !== true) : []).map((reply) => ({
       comment: reply,
       post,
       parentAuthor: String(comment.author ?? ""),
@@ -1420,9 +1416,11 @@ function MetaCommentCard({
       <div className="meta-comment-body">
         <div className="meta-comment-author">
           <strong>{display(comment.author)}</strong>
-          <span className={`meta-sentiment meta-sentiment-${classifyCommentSentiment(String(comment.message ?? ""))}`}>
-            {sentimentLabels[classifyCommentSentiment(String(comment.message ?? ""))]}
-          </span>
+          {comment.is_page_comment !== true && (
+            <span className={`meta-sentiment meta-sentiment-${classifyCommentSentiment(String(comment.message ?? ""))}`}>
+              {sentimentLabels[classifyCommentSentiment(String(comment.message ?? ""))]}
+            </span>
+          )}
         </div>
         {editing
           ? <form className="meta-comment-edit-form" onSubmit={(event) => void saveComment(event)}>
@@ -1522,7 +1520,9 @@ function MetaCommentReply({
       <div className="meta-comment-body">
         <div className="meta-comment-author">
           <strong>{display(reply.author)}</strong>
-          <span className={`meta-sentiment meta-sentiment-${sentiment}`}>{sentimentLabels[sentiment]}</span>
+          {reply.is_page_comment !== true && (
+            <span className={`meta-sentiment meta-sentiment-${sentiment}`}>{sentimentLabels[sentiment]}</span>
+          )}
         </div>
         {editing
           ? <form className="meta-comment-edit-form" onSubmit={(event) => void saveReply(event)}>
@@ -1616,7 +1616,8 @@ function Dashboard({ data, setView }: { data: Record<string, unknown>; setView: 
   const posts = (data.posts ?? []) as Row[];
   const counts = (summary.posts ?? {}) as Record<string, number>;
   const seo = (summary.seo ?? {}) as Row;
-  const pendingApprovals = Number(summary.pending_approvals ?? 0);
+  const pendingFromPosts = posts.filter((post) => post.status === "pending").length;
+  const pendingApprovals = Math.max(Number(summary.pending_approvals ?? 0), pendingFromPosts);
   const totalPosts = Number(counts.draft ?? 0) + pendingApprovals + Number(counts.approved ?? 0) + Number(counts.published_manual ?? 0);
 
   return <>
@@ -1629,7 +1630,8 @@ function Dashboard({ data, setView }: { data: Record<string, unknown>; setView: 
         </p>
         <div className="mkt-hero-actions">
           <button className="button button-primary mkt-hero-btn" onClick={() => setView("content")}>
-            + Créer un contenu
+            <span className="new-content-label">+ Créer un contenu</span>
+            <span className="new-content-icon" aria-hidden="true">+</span>
           </button>
           <button className="button button-outline" onClick={() => setView("calendar")}>
             Planning éditorial
@@ -1843,7 +1845,7 @@ function PostRow({ post }: { post: Row }) {
         <strong>{display(post.title)}</strong>
         <small>
           {post.listing_name ? `${display(post.listing_name)} · ` : ""}
-          Prévu le {dateLabel(post.scheduled_date)}
+          {post.scheduled_date ? `Prévu le ${dateLabel(post.scheduled_date)}${post.scheduled_time ? ` à ${display(post.scheduled_time)}` : ""}` : "Date non définie"}
         </small>
       </div>
       <Status value={post.status} />
@@ -1883,13 +1885,15 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview, ca
   const aiConfigured = activeAi?.configured === true;
   const aiCheck = activeAi?.last_check as Row | null;
   const [editing, setEditing] = useState<Row | null>(null);
-  const [draft, setDraft] = useState({ title: "", channel: "facebook", body: "", destination_url: "https://cabalou.net/", scheduled_date: "", listing_id: "" });
+  const [draft, setDraft] = useState({ title: "", channel: "facebook", body: "", destination_url: "https://cabalou.net/", scheduled_date: "", scheduled_time: "", listing_id: "" });
   const [ai, setAi] = useState({ objective: "Présenter un logement", tone: "Chaleureux et professionnel", audience: "", brief: "" });
   const [aiBusy, setAiBusy] = useState(false);
   const [aiError, setAiError] = useState("");
   const [aiSuccess, setAiSuccess] = useState("");
+  const [aiNotes, setAiNotes] = useState("");
   const [photoAspect, setPhotoAspect] = useState("original");
   const [pendingPhoto, setPendingPhoto] = useState<{ postId: number; file: File; url: string } | null>(null);
+  const [pendingCreatePhoto, setPendingCreatePhoto] = useState<{ file: File; url: string } | null>(null);
   const [photoError, setPhotoError] = useState("");
   const [filter, setFilter] = useState("all");
 
@@ -1897,6 +1901,10 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview, ca
     if (!pendingPhoto) return;
     return () => URL.revokeObjectURL(pendingPhoto.url);
   }, [pendingPhoto]);
+  useEffect(() => {
+    if (!pendingCreatePhoto) return;
+    return () => URL.revokeObjectURL(pendingCreatePhoto.url);
+  }, [pendingCreatePhoto]);
 
   useEffect(() => {
     if (!assistantCreateRequest || !canEdit) return;
@@ -1918,26 +1926,39 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview, ca
 
   function startCreate() {
     setEditing({ id: 0 });
-    setDraft({ title: "", channel: "facebook", body: "", destination_url: "https://cabalou.net/", scheduled_date: "", listing_id: "" });
+    setDraft({ title: "", channel: "facebook", body: "", destination_url: "https://cabalou.net/", scheduled_date: "", scheduled_time: "", listing_id: "" });
     setAi({ objective: "Présenter un logement", tone: "Chaleureux et professionnel", audience: "", brief: "" });
     setAiError("");
     setAiSuccess("");
+    setAiNotes("");
+    setPendingCreatePhoto(null);
   }
   function startEdit(post: Row) {
     setEditing(post);
+    setAiNotes("");
     setDraft({
       title: String(post.title ?? ""), channel: String(post.channel ?? "facebook"), body: String(post.body ?? ""),
       destination_url: String(post.destination_url ?? "https://cabalou.net/"), scheduled_date: String(post.scheduled_date ?? ""),
+      scheduled_time: String(post.scheduled_time ?? ""),
       listing_id: String(post.listing_id ?? ""),
     });
   }
   async function savePost(event: FormEvent) {
     event.preventDefault();
     const payload = { ...draft, listing_id: draft.listing_id || null, scheduled_date: draft.scheduled_date || null };
-    if (await mutate(() => request(editing?.id ? `/api/posts/${editing.id}` : "/api/posts", editing?.id ? "PATCH" : "POST", payload), "Contenu enregistré.")) setEditing(null);
+    if (await mutate(async () => {
+      const saved = await request(editing?.id ? `/api/posts/${editing.id}` : "/api/posts", editing?.id ? "PATCH" : "POST", payload);
+      const post = saved?.post as Row | undefined;
+      if (!editing?.id && post?.id && pendingCreatePhoto) {
+        await request(`/api/posts/${post.id}/image`, "PUT", undefined, pendingCreatePhoto.file);
+      }
+    }, "Contenu enregistré.")) {
+      setPendingCreatePhoto(null);
+      setEditing(null);
+    }
   }
   async function generate() {
-    setAiBusy(true); setAiError(""); setAiSuccess("");
+    setAiBusy(true); setAiError(""); setAiSuccess(""); setAiNotes("");
     try {
       const result = await request("/api/ai/generate-content", "POST", {
         ...ai, channel: draft.channel, listing_id: draft.listing_id || null, facts: [],
@@ -1945,6 +1966,7 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview, ca
       const generated = result?.generation as Row | undefined;
       if (typeof generated?.body !== "string" || !generated.body.trim()) throw new Error("L’assistant n’a pas généré de texte exploitable. Réessayez.");
       setDraft((current) => ({ ...current, body: String(generated.body) }));
+      setAiNotes(typeof generated.notes === "string" ? String(generated.notes) : "");
       setAiSuccess("Brouillon généré. Relisez-le avant de l’enregistrer.");
     } catch (reason) { setAiError(reason instanceof Error ? reason.message : "La génération a échoué."); }
     finally { setAiBusy(false); }
@@ -1955,6 +1977,16 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview, ca
     try {
       const cropped = await cropPhoto(file, photoAspect);
       setPendingPhoto({ postId, file: cropped, url: URL.createObjectURL(cropped) });
+    } catch (reason) {
+      setPhotoError(reason instanceof Error ? reason.message : "Impossible de préparer la photo.");
+    }
+  }
+  async function prepareCreatePhoto(file?: File) {
+    if (!file) return;
+    setPhotoError("");
+    try {
+      const cropped = await cropPhoto(file, photoAspect);
+      setPendingCreatePhoto({ file: cropped, url: URL.createObjectURL(cropped) });
     } catch (reason) {
       setPhotoError(reason instanceof Error ? reason.message : "Impossible de préparer la photo.");
     }
@@ -1985,7 +2017,8 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview, ca
       description="Rédigez, validez et pilotez vos publications Facebook sans jamais publier à l'aveugle."
       action={canEdit ? (
         <button className="button button-primary mkt-hero-btn" onClick={startCreate}>
-          + Nouveau contenu
+          <span className="new-content-label">+ Nouveau contenu</span>
+          <span className="new-content-icon" aria-hidden="true">+</span>
         </button>
       ) : undefined}
     />
@@ -2004,6 +2037,13 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview, ca
           <label>Canal social<input value="Facebook" disabled readOnly /></label>
           <label>Logement rattaché<select value={draft.listing_id} onChange={(event) => setDraft({ ...draft, listing_id: event.target.value })}><option value="">Aucun logement spécifique</option>{listings.map((item) => <option key={String(item.id)} value={String(item.id)}>{display(item.name)} — {display(item.city)}</option>)}</select></label>
           <label>Date de diffusion souhaitée<input type="date" value={draft.scheduled_date} onChange={(event) => setDraft({ ...draft, scheduled_date: event.target.value })} /></label>
+          <label>Heure de diffusion<input type="time" value={draft.scheduled_time} onChange={(event) => setDraft({ ...draft, scheduled_time: event.target.value })} /></label>
+          {!editing?.id && (
+            <label className="span-two">Photo du contenu
+              <input type="file" accept="image/jpeg,image/png" onChange={(event) => void prepareCreatePhoto(event.target.files?.[0])} />
+              {pendingCreatePhoto && <img className="mkt-create-photo-preview" src={pendingCreatePhoto.url} alt="Aperçu de la photo sélectionnée" />}
+            </label>
+          )}
           <label className="span-two">Lien de redirection (Call to Action)<input type="url" required value={draft.destination_url} onChange={(event) => setDraft({ ...draft, destination_url: event.target.value })} /></label>
           <label className="span-two">Légende / Texte de la publication<textarea rows={6} maxLength={5000} value={draft.body} placeholder="Écrivez le message ou utilisez l'assistant IA ci-dessous..." onChange={(event) => setDraft({ ...draft, body: event.target.value })} /></label>
 
@@ -2055,6 +2095,7 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview, ca
               </label>
               {aiError && <p className="form-error span-two">{aiError}</p>}
               {aiSuccess && <p className="ai-generation-success span-two" role="status">{aiSuccess}</p>}
+              {aiNotes && <p className="form-hint span-two"><strong>À vérifier (note interne) :</strong> {aiNotes}</p>}
               <div className="ai-generation-actions span-two">
                 <button type="button" className="button button-primary" onClick={() => void generate()} disabled={aiBusy || !aiConfigured || !ai.objective.trim() || !ai.tone.trim()}>
                   {aiBusy ? "Génération en cours…" : "Générer le texte"}
@@ -2124,6 +2165,9 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview, ca
                 </div>
 
                 <div className="mkt-card-body">
+                  {Boolean(post.has_image) && (
+                    <img className="mkt-post-thumbnail" src={`/api/posts/${String(post.id)}/image`} alt="" loading="lazy" />
+                  )}
                   <h3 className="mkt-card-title">{display(post.title)}</h3>
                   <p className="mkt-card-excerpt">{display(post.body)}</p>
 
@@ -2135,7 +2179,7 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview, ca
                   )}
 
                   <div className="mkt-card-meta">
-                    <span>Prévu le {dateLabel(post.scheduled_date)}</span>
+                    <span>{post.scheduled_date ? `Prévu le ${dateLabel(post.scheduled_date)}${post.scheduled_time ? ` à ${display(post.scheduled_time)}` : ""}` : "Date non définie"}</span>
                   </div>
                 </div>
 
@@ -2145,13 +2189,40 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview, ca
                     <button className="button button-primary small" disabled={busy} onClick={() => void mutate(() => request(`/api/posts/${post.id}/submit`, "POST", {}), "Contenu soumis à validation.")}>Soumettre à validation</button>
                   </>}
                   {canReview && post.status === "pending" && <>
-                    <button className="button button-primary small" disabled={busy || post.created_by === user.id} onClick={() => void mutate(() => request(`/api/posts/${post.id}/approve`, "POST", {}), "Contenu approuvé.")}>Approuver</button>
-                    <button className="button button-outline small" disabled={busy || post.created_by === user.id} onClick={() => { const reason = window.prompt("Motif du rejet"); if (reason) void mutate(() => request(`/api/posts/${post.id}/reject`, "POST", { reason }), "Contenu rejeté."); }}>Rejeter</button>
+                    <button
+                      className="button button-primary small"
+                      disabled={busy || (user.role === "marketing_manager" && post.created_by === user.id)}
+                      title={user.role === "marketing_manager" && post.created_by === user.id ? "Vous ne pouvez pas approuver un contenu que vous avez créé." : "Approuver ce contenu"}
+                      onClick={() => void mutate(() => request(`/api/posts/${post.id}/approve`, "POST", {}), "Contenu approuvé.")}>
+                      Approuver
+                    </button>
+                    <button
+                      className="button button-outline small"
+                      disabled={busy || (user.role === "marketing_manager" && post.created_by === user.id)}
+                      title={user.role === "marketing_manager" && post.created_by === user.id ? "Vous ne pouvez pas rejeter un contenu que vous avez créé." : "Rejeter ce contenu"}
+                      onClick={() => { const reason = window.prompt("Motif du rejet"); if (reason) void mutate(() => request(`/api/posts/${post.id}/reject`, "POST", { reason }), "Contenu rejeté."); }}>
+                      Rejeter
+                    </button>
                   </>}
-                  {canEdit && post.status === "approved" && (
-                    <button className="button button-outline small mkt-btn-publish" onClick={() => { const url = window.prompt("URL HTTPS de la publication en ligne"); if (url) void mutate(() => request(`/api/posts/${post.id}/published-manual`, "POST", { published_url: url }), "Publication manuelle consignée."); }}>
+                  {canEdit && post.status === "approved" && <>
+                    <button className="button button-primary small mkt-btn-publish" disabled={busy} onClick={() => void mutate(() => request(`/api/posts/${post.id}/publish-meta`, "POST", {}), "Contenu publié sur Facebook.")}>
+                      Publier sur Facebook
+                    </button>
+                    <button className="button button-outline small" disabled={busy} onClick={() => {
+                      const scheduled = window.prompt("Date et heure ISO (ex. 2026-12-01T10:30:00+01:00)");
+                      if (scheduled) void mutate(() => request(`/api/posts/${post.id}/publish-meta`, "POST", { scheduled_publish_time: scheduled }), "Contenu programmé sur Facebook.");
+                    }}>Programmer</button>
+                    <button className="button button-outline small" onClick={() => { const url = window.prompt("URL HTTPS de la publication en ligne"); if (url) void mutate(() => request(`/api/posts/${post.id}/published-manual`, "POST", { published_url: url }), "Publication manuelle consignée."); }}>
                       Marquer comme publié
                     </button>
+                  </>}
+                  {canEdit && post.status === "pending" && (
+                    <button className="button button-outline small" disabled={busy} onClick={() => void mutate(() => request(`/api/posts/${post.id}/draft`, "POST", {}), "Contenu remis en brouillon.")}>Remettre en brouillon</button>
+                  )}
+                  {canEdit && ["draft", "rejected", "pending"].includes(String(post.status)) && (
+                    <button className="button button-outline small" disabled={busy} onClick={() => {
+                      if (window.confirm("Supprimer définitivement ce contenu ?")) void mutate(() => request(`/api/posts/${post.id}`, "DELETE"), "Contenu supprimé.");
+                    }}>Supprimer</button>
                   )}
                   {canEdit && post.status !== "published_manual" && <>
                     <label className="crop-select mkt-crop-select">
@@ -2202,29 +2273,71 @@ function ContentView({ data, user, request, mutate, busy, canEdit, canReview, ca
 
 function CalendarView({ data, setView }: { data: Record<string, unknown>; setView: (view: View) => void }) {
   const allPosts = ((data.posts ?? []) as Row[]).filter((post) => String(post.channel ?? "").toLowerCase() === "facebook").slice().sort((a, b) => String(a.scheduled_date ?? "9999").localeCompare(String(b.scheduled_date ?? "9999")));
+  const [calendarMode, setCalendarMode] = useState<"month" | "week">("month");
+  const [month, setMonth] = useState(monthNow());
+  const [anchorDate, setAnchorDate] = useState(new Date().toISOString().slice(0, 10));
+  const monthStart = new Date(`${month}-01T12:00:00`);
+  const gridStart = new Date(monthStart);
+  gridStart.setDate(monthStart.getDate() - ((monthStart.getDay() + 6) % 7));
+  const monthCells = Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(gridStart);
+    date.setDate(gridStart.getDate() + index);
+    return date.toISOString().slice(0, 10);
+  });
+  const weekStart = new Date(`${anchorDate}T12:00:00`);
+  weekStart.setDate(weekStart.getDate() - ((weekStart.getDay() + 6) % 7));
+  const weekCells = Array.from({ length: 7 }, (_, index) => {
+    const date = new Date(weekStart);
+    date.setDate(weekStart.getDate() + index);
+    return date.toISOString().slice(0, 10);
+  });
+  const visibleDates = calendarMode === "month" ? monthCells : weekCells;
 
   return <>
     <PageHeading
       eyebrow="STRATÉGIE ÉDITORIALE"
       title="Planning Éditorial"
       description="Visualisez et organisez le calendrier de diffusion Facebook."
-      action={<button className="button button-primary mkt-hero-btn" onClick={() => setView("content")}>+ Nouveau contenu</button>}
+      action={<button className="button button-primary mkt-hero-btn" onClick={() => setView("content")}><span className="new-content-label">+ Nouveau contenu</span><span className="new-content-icon" aria-hidden="true">+</span></button>}
     />
 
     <section className="panel mkt-panel">
       <div className="panel-heading">
         <div>
-          <h2>Calendrier chronologique</h2>
-          <p className="muted">Publications triées par ordre de diffusion souhaitée</p>
+          <h2>Calendrier éditorial</h2>
+          <p className="muted">Vue {calendarMode === "month" ? "mensuelle" : "hebdomadaire"} des diffusions Facebook</p>
+        </div>
+        <div className="button-row">
+          <button type="button" className={calendarMode === "week" ? "button button-primary" : "button"} onClick={() => setCalendarMode("week")}>Semaine</button>
+          <button type="button" className={calendarMode === "month" ? "button button-primary" : "button"} onClick={() => setCalendarMode("month")}>Mois</button>
         </div>
       </div>
-      {allPosts.length ? (
-        <div className="upcoming-list mkt-upcoming-list">
-          {allPosts.map((post) => <PostRow key={String(post.id)} post={post} />)}
-        </div>
-      ) : (
-        <Empty>Aucun contenu planifié pour ce canal. Utilisez le bouton "Nouveau contenu" pour programmer un post.</Empty>
+      {calendarMode === "month" && (
+        <label className="inline-label">Mois
+          <input type="month" value={month} onChange={(event) => setMonth(event.target.value)} />
+        </label>
       )}
+      {calendarMode === "week" && (
+        <label className="inline-label">Semaine du
+          <input type="date" value={anchorDate} onChange={(event) => setAnchorDate(event.target.value)} />
+        </label>
+      )}
+      <div className={`editorial-calendar ${calendarMode}`}>
+        {visibleDates.map((date) => {
+          const dayPosts = allPosts.filter((post) => String(post.scheduled_date ?? "") === date);
+          const dayNumber = Number(date.slice(-2));
+          return (
+            <article className="editorial-calendar-day" key={date}>
+              <strong>{dayNumber}</strong>
+              {dayPosts.map((post) => (
+                <button type="button" key={String(post.id)} className="editorial-calendar-post" onClick={() => setView("content")}>
+                  {post.scheduled_time ? `${String(post.scheduled_time)} · ` : ""}{display(post.title)}
+                </button>
+              ))}
+            </article>
+          );
+        })}
+      </div>
     </section>
   </>;
 }
@@ -2551,7 +2664,7 @@ function ReportsView({ data, request, mutate, busy, canEdit, onMonthChange }: { 
     await mutate(() => request("/api/reports", "POST", { period: month, metrics, source_note: source }), "Rapport mensuel enregistré.", "reports");
   }
   return <>
-    <PageHeading eyebrow="SUIVI GLOBAL" title="Rapports & ROI" description="Bilan mensuel certifié de l'activité marketing et des réservations." />
+    <PageHeading eyebrow="SUIVI GLOBAL" title="Rapports & ROI" description="Bilan mensuel de l'activité marketing et des réservations." />
     <section className="panel mkt-panel"><div className="panel-heading"><div><h2>Rapport de performance</h2></div><label className="inline-label">Mois d'analyse<input type="month" value={month} onChange={(event) => { setMonth(event.target.value); onMonthChange(event.target.value); }} /></label></div>
       {canEdit ? <form onSubmit={(event) => void save(event)}><div className="report-grid mkt-report-grid">{definitions.map((group) => <section key={String(group.id)} className="report-group mkt-report-group"><h3>{display(group.label)}</h3>{Array.isArray(group.metrics) && (group.metrics as Row[]).map((metric) => <label key={String(metric.key)}>{display(metric.label)}<input type="number" min="0" step={metric.kind === "count" ? "1" : "0.1"} value={values[String(metric.key)] ?? ""} onChange={(event) => setValues({ ...values, [String(metric.key)]: event.target.value })} /></label>)}</section>)}</div>
         <label className="report-source">Source vérifiable des chiffres<input value={source} maxLength={250} onChange={(event) => setSource(event.target.value)} placeholder="Ex. Statistiques Meta Business Suite & Search Console" /></label>
@@ -2573,7 +2686,7 @@ function UsersView({ data, request, mutate, busy }: { data: Record<string, unkno
   return <>
     <PageHeading eyebrow="GESTION DE L'ÉQUIPE" title="Équipe & Accès" description="Gérez les comptes, les accès de relecture et les administrateurs." />
     <section className="panel mkt-panel"><div className="panel-heading"><div><h2>Ajouter un collaborateur</h2></div></div>
-      <form className="form-grid" onSubmit={(event) => void create(event)}><label>Nom d’utilisateur<input required maxLength={80} autoComplete="username" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} /></label><label>Adresse e-mail Supabase<input type="email" autoComplete="email" required maxLength={254} value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label><label>Nom affiché<input required maxLength={80} value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} /></label><PasswordField id="new-user-password" label="Mot de passe" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} autoComplete="new-password" required /><label>Rôle attribué<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>{Object.entries(roleLabels).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label><button className="button button-primary" disabled={busy}>Créer l’utilisateur</button></form>
+      <form className="form-grid" onSubmit={(event) => void create(event)}><label>Nom d’utilisateur<input required maxLength={80} autoComplete="username" value={form.username} onChange={(event) => setForm({ ...form, username: event.target.value })} /></label><label>Adresse e-mail<input type="email" autoComplete="email" required maxLength={254} value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value })} /></label><label>Nom affiché<input required maxLength={80} value={form.display_name} onChange={(event) => setForm({ ...form, display_name: event.target.value })} /></label><PasswordField id="new-user-password" label="Mot de passe" value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value })} autoComplete="new-password" required /><label>Rôle attribué<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}>{Object.entries(roleLabels).map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select></label><button className="button button-primary" disabled={busy}>Créer l’utilisateur</button></form>
     </section>
     <section className="panel mkt-panel"><div className="panel-heading"><div><h2>Membres de l'équipe</h2></div></div><div className="table-scroll"><table><thead><tr><th>Collaborateur</th><th>Rôle</th><th>Statut</th><th>Gestion</th></tr></thead><tbody>{users.map((item) => <tr key={String(item.id)}><td><strong>{display(item.display_name)}</strong><small className="table-sub">{display(item.username)}</small></td><td><select aria-label={`Rôle de ${item.username}`} value={String(item.role)} onChange={(event) => void mutate(() => request(`/api/users/${item.id}`, "PATCH", { role: event.target.value, active: Boolean(item.active) }), "Rôle mis à jour.", "users")}>{Object.entries(roleLabels).map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></td><td><span className={`mkt-kpi-badge ${item.active ? "green" : "neutral"}`}>{item.active ? "Actif" : "Désactivé"}</span></td><td><button className="text-button" disabled={busy} onClick={() => void mutate(() => request(`/api/users/${item.id}`, "PATCH", { role: item.role, active: !item.active }), "Accès mis à jour.", "users")}>{item.active ? "Désactiver" : "Réactiver"}</button></td></tr>)}</tbody></table></div></section>
   </>;

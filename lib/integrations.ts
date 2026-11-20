@@ -1,6 +1,7 @@
 import nodemailer from "nodemailer";
 import { HttpError } from "./security";
 import { listListings, type SeoSearchConsoleMetric } from "./service";
+import { connectDatabase } from "./db";
 import { aiProviderCascade, aiProviderConfig, aiProviderStatus } from "./ai-provider";
 
 const TIMEOUT_MS = 12_000;
@@ -100,7 +101,7 @@ function configured(id: string) {
   return integration;
 }
 
-type MetaRequestContext = "page-read" | "comment-read" | "comment-write" | "page-write" | "reaction-read" | "insights";
+type MetaRequestContext = "page-read" | "comment-read" | "comment-write" | "page-write" | "media-write" | "reaction-read" | "insights";
 
 function metaFailureMessage(code: number | undefined, url: string, method?: string, context?: MetaRequestContext): string {
   if (code === 190) return "La connexion Facebook n’est plus valide. Contactez un administrateur pour la rétablir.";
@@ -115,6 +116,9 @@ function metaFailureMessage(code: number | undefined, url: string, method?: stri
   }
   if (context === "reaction-read" && (code === 10 || code === 200)) {
     return "Les réactions de cette publication ne sont pas disponibles pour le moment.";
+  }
+  if (context === "media-write" && (code === 10 || code === 200)) {
+    return "Meta n’a pas pu téléverser ce média. Vérifiez le format MP4 ou JPEG/PNG, sa taille et les autorisations de la Page.";
   }
   if ((context === "page-write" || method !== "GET") && (code === 10 || code === 200)) {
     return "Facebook n’a pas pu modifier cette publication. Réessayez ou contactez un administrateur.";
@@ -654,6 +658,39 @@ async function checkProvider(id: string): Promise<string> {
       try { publicUrl = new URL(first.public_url as string); } catch { throw new HttpError(400, "L’URL publique du premier logement doit utiliser HTTPS."); }
       if (publicUrl.protocol !== "https:") throw new HttpError(400, "L’URL publique du premier logement doit utiliser HTTPS.");
     }
+    const db = connectDatabase();
+    try {
+      for (const listing of listings) {
+        const item = listing as Record<string, unknown>;
+        const externalId = string(item.external_id);
+        const name = string(item.name);
+        const city = string(item.city);
+        const neighborhood = string(item.neighborhood);
+        const listingType = string(item.listing_type);
+        const features = Array.isArray(item.features) ? item.features.map((feature) => string(feature)).filter(Boolean).join("; ") : "";
+        const publicUrl = string(item.public_url);
+        const factsCheckedAt = string(item.facts_checked_at);
+        if (!externalId || !name || !city || !neighborhood || !listingType || !publicUrl || !factsCheckedAt) {
+          throw new HttpError(400, "Un logement retourné par l’API Cabalou est incomplet.");
+        }
+        let parsedUrl: URL;
+        try { parsedUrl = new URL(publicUrl); } catch { throw new HttpError(400, "L’URL publique d’un logement doit utiliser HTTPS."); }
+        if (parsedUrl.protocol !== "https:") throw new HttpError(400, "L’URL publique d’un logement doit utiliser HTTPS.");
+        const current = await db.prepare("SELECT id FROM listings WHERE external_id=?").get(externalId) as { id: number } | undefined;
+        if (current) {
+          await db.prepare(`UPDATE listings SET name=?, city=?, neighborhood=?, listing_type=?, features=?,
+            public_url=?, facts_checked_at=?, is_demo=0 WHERE id=?`)
+            .run(name, city, neighborhood, listingType, features, publicUrl, factsCheckedAt, current.id);
+        } else {
+          await db.prepare(`INSERT INTO listings
+            (external_id, name, city, neighborhood, listing_type, features, public_url, facts_checked_at, is_demo)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`)
+            .run(externalId, name, city, neighborhood, listingType, features, publicUrl, factsCheckedAt);
+        }
+      }
+    } finally {
+      await db.close();
+    }
     return `API Cabalou accessible en lecture; ${listings.length} logement(s) dans la première page.`;
   }
   throw new HttpError(400, "Cette intégration ne nécessite aucune vérification automatique.");
@@ -683,7 +720,7 @@ function graphComments(value: unknown): Record<string, unknown>[] {
 
 function metaComment(comment: Record<string, unknown>) {
   const authorId = string(object(comment.from).id);
-  const author = string(object(comment.from).name) || "Nom non fourni par Meta";
+  const author = string(object(comment.from).name) || (authorId === process.env.META_PAGE_ID ? "Cabalou Gabon" : "Auteur Facebook");
   return {
     id: string(comment.id),
     message: string(comment.message),
@@ -696,7 +733,7 @@ function metaComment(comment: Record<string, unknown>) {
         id: string(reply.id),
         message: string(reply.message),
         created_time: string(reply.created_time),
-        author: string(object(reply.from).name) || "Nom non fourni par Meta",
+        author: string(object(reply.from).name) || (replyAuthorId === process.env.META_PAGE_ID ? "Cabalou Gabon" : "Auteur Facebook"),
         is_page_comment: Boolean(replyAuthorId && replyAuthorId === process.env.META_PAGE_ID),
       };
     }).sort((a, b) => Date.parse(b.created_time) - Date.parse(a.created_time)),
@@ -996,8 +1033,8 @@ async function uploadUnpublishedMetaPhoto(
     method: "POST",
     headers: { Authorization: ["Bearer", token].join(" ") },
     body: form,
-  }, "Meta", "page-write", 5 * 60_000);
-  apiSuccess(result, "Meta", url, "POST", "page-write");
+  }, "Meta", "media-write", 5 * 60_000);
+  apiSuccess(result, "Meta", url, "POST", "media-write");
   const id = string(result.id);
   if (!id) throw new HttpError(400, "Meta n’a pas confirmé le téléversement d’une photo.");
   return id;
@@ -1029,8 +1066,8 @@ async function publishMetaPhotoAlbum(
     method: "POST",
     headers: { Authorization: ["Bearer", token].join(" ") },
     body: form,
-  }, "Meta", "page-write", 5 * 60_000);
-  apiSuccess(result, "Meta", url, "POST", "page-write");
+  }, "Meta", "media-write", 5 * 60_000);
+  apiSuccess(result, "Meta", url, "POST", "media-write");
   const id = string(result.id);
   if (!id) throw new HttpError(400, "Meta n’a pas confirmé la publication de l’album.");
   return scheduledPublishTime === null
@@ -1276,7 +1313,7 @@ export async function generateContent(data: Record<string, unknown>) {
     );
     if (facts.length > 20) throw new HttpError(400, "Les faits fournis sont invalides.");
   }
-  const instructions = "Tu es l’assistant de rédaction marketing de Cabalou. Rédige uniquement un brouillon en français pour le canal indiqué. Utilise seulement les faits explicitement fournis. N’invente jamais prix, disponibilité, remise, équipement, adresse précise, capacité ou caractéristique. Si les faits sont insuffisants, formule un texte prudent sans compléter et ajoute à la fin une courte ligne « À vérifier : ... ». Ne prétends pas avoir vérifié les faits. N’inclus aucune donnée personnelle. Pas de hashtags trompeurs, de garantie de réservation ni de promesse de résultat. La sortie sera revue par une personne et ne sera pas publiée automatiquement.";
+  const instructions = "Tu es l’assistant de rédaction marketing de Cabalou. Rédige uniquement un brouillon en français pour le canal indiqué. Utilise seulement les faits explicitement fournis, y compris les lieux, quartiers et équipements mentionnés dans le brief ou les faits vérifiés. N’invente jamais prix, disponibilité, remise, équipement, adresse précise, capacité ou caractéristique. Si des informations doivent être vérifiées, ne les place pas dans la légende : termine la légende sans note interne, puis ajoute une liste séparée commençant exactement par «À vérifier:» suivie des éléments à confirmer. Ajoute 3 à 5 hashtags pertinents à la fin de la légende, en cohérence avec le Gabon et Cabalou. Ne prétends pas avoir vérifié les faits. N’inclus aucune donnée personnelle. Pas de garantie de réservation ni de promesse de résultat. La sortie sera revue par une personne.";
   const input = [
     `Canal : ${channel}`, `Objectif : ${objective}`, `Ton : ${tone}`,
     `Public visé : ${audience || "Non précisé."}`,
@@ -1300,7 +1337,13 @@ export async function generateContent(data: Record<string, unknown>) {
       const message = firstChoice.message && typeof firstChoice.message === "object" ? firstChoice.message as Record<string, unknown> : {};
       const output = string(message.content);
       if (!output.trim() || output.length > 5000) throw new HttpError(400, `${provider.name} n’a pas retourné de brouillon exploitable.`);
-      return { body: output.trim(), model: provider.model, listingId };
+      const lines = output.trim().split(/\r?\n/u);
+      const noteIndex = lines.findIndex((line) => /^À\s*vérifier\s*:/iu.test(line.trim()));
+      const body = (noteIndex >= 0 ? lines.slice(0, noteIndex) : lines).join("\n").trim();
+      const notes = noteIndex >= 0
+        ? lines.slice(noteIndex).join("\n").replace(/^À\s*vérifier\s*:\s*/iu, "").trim()
+        : "";
+      return { body, notes, model: provider.model, listingId };
     } catch (error) {
       if (!(error instanceof HttpError) || index === providers.length - 1) throw error;
     }

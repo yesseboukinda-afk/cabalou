@@ -121,7 +121,6 @@ export function SiteAssistant({
         action: action as SiteAssistantAction,
       }]);
     } catch (reason) {
-      setMessages((current) => current.slice(0, -1));
       setInput(message);
       setError(reason instanceof Error ? reason.message : "Impossible de joindre l’assistant.");
     } finally {

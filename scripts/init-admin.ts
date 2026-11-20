@@ -46,7 +46,7 @@ async function main() {
   const terminal = createInterface({ input: stdin, output: stdout });
   try {
     const username = (await terminal.question("Nom d’utilisateur administrateur : ")).trim();
-    const email = (await terminal.question("Adresse e-mail Supabase : ")).trim();
+    const email = (await terminal.question("Adresse e-mail : ")).trim();
     const displayName = (await terminal.question("Nom affiché : ")).trim();
     terminal.close();
     const password = await hiddenPrompt("Mot de passe : ");

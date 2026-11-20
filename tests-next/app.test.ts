@@ -1508,17 +1508,28 @@ describe("migration Next Cabalou", () => {
     }), /e-mail est invalide/);
   });
 
-  it("applique les transitions de validation et interdit l’auto-approbation", async () => {
+  it("applique les transitions de validation et limite l’auto-approbation aux responsables marketing", async () => {
     const post = await service.savePost(adminId, null, {
       title: "Test Cabalou", channel: "facebook", body: "Brouillon", destination_url: "https://cabalou.net/",
+      scheduled_date: "2026-12-01", scheduled_time: "10:30",
     }) as { id: number };
+    await service.savePostImage(adminId, post.id, Buffer.from([0xff, 0xd8, 0xff, 0x00, 0xff, 0xd9]), "image/jpeg");
     await service.submitPost(adminId, post.id);
-    await assert.rejects(service.reviewPost(adminId, "admin", post.id, true), /créateur ne peut pas approuver/);
+    assert.equal((await service.reviewPost(adminId, "admin", post.id, true) as { status: string }).status, "approved");
+  });
+
+  it("autorise un responsable marketing à approuver un contenu qu’il n’a pas créé", async () => {
+    const post = await service.savePost(adminId, null, {
+      title: "Test responsable", channel: "facebook", body: "Brouillon", destination_url: "https://cabalou.net/",
+      scheduled_date: "2026-12-02", scheduled_time: "11:00",
+    }) as { id: number };
+    await service.savePostImage(adminId, post.id, Buffer.from([0xff, 0xd8, 0xff, 0x00, 0xff, 0xd9]), "image/jpeg");
+    await service.submitPost(adminId, post.id);
     assert.equal((await service.reviewPost(managerId, "marketing_manager", post.id, true) as { status: string }).status, "approved");
     assert.equal((await service.recordManualPublication(managerId, post.id, "https://facebook.com/cabalou/post") as { status: string }).status, "published_manual");
   });
 
-  it("supprime les brouillons et refuse de supprimer un contenu soumis", async () => {
+  it("supprime les brouillons et permet de supprimer ou remettre en brouillon un contenu soumis", async () => {
     const draft = await service.savePost(adminId, null, {
       title: "Brouillon à supprimer", channel: "facebook", body: "Texte de test",
       destination_url: "https://cabalou.net/",
@@ -1528,11 +1539,14 @@ describe("migration Next Cabalou", () => {
 
     const pending = await service.savePost(adminId, null, {
       title: "Contenu en validation", channel: "facebook", body: "Texte de test",
-      destination_url: "https://cabalou.net/",
+      destination_url: "https://cabalou.net/", scheduled_date: "2026-12-03", scheduled_time: "12:00",
     }) as { id: number };
+    await service.savePostImage(adminId, pending.id, Buffer.from([0xff, 0xd8, 0xff, 0x00, 0xff, 0xd9]), "image/jpeg");
     await service.submitPost(adminId, pending.id);
-    await assert.rejects(service.deletePost(adminId, pending.id), /Seuls les brouillons ou contenus rejetés/u);
-    assert.equal((await service.getPost(pending.id) as { status: string }).status, "pending");
+    assert.equal((await service.returnPostToDraft(adminId, pending.id) as { status: string }).status, "draft");
+    await service.submitPost(adminId, pending.id);
+    assert.deepEqual(await service.deletePost(adminId, pending.id), { id: pending.id });
+    assert.equal(await service.getPost(pending.id), null);
   });
 
   it("bloque les parcours de réactivation sans base valide et après opposition", async () => {
@@ -1757,7 +1771,9 @@ describe("migration Next Cabalou", () => {
   it("réinitialise l’approbation lors du remplacement ou retrait d’une photo", async () => {
     const post = await service.savePost(adminId, null, {
       title: "Photo test", channel: "facebook", body: "Brouillon", destination_url: "https://cabalou.net/",
+      scheduled_date: "2026-12-04", scheduled_time: "13:00",
     }) as { id: number };
+    await service.savePostImage(adminId, post.id, Buffer.from([0xff, 0xd8, 0xff, 0x00, 0xff, 0xd9]), "image/jpeg");
     await service.submitPost(adminId, post.id);
     await service.savePostImage(adminId, post.id, Buffer.from([0xff, 0xd8, 0xff, 0x00, 0xff, 0xd9]), "image/jpeg");
     assert.equal((await service.getPost(post.id) as { status: string }).status, "draft");

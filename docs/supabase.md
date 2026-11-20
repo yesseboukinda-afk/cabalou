@@ -71,11 +71,11 @@ profil Cabalou, et refuse de créer un deuxième administrateur actif. Vérifiez
 ensuite que toutes les variables ci-dessus sont également configurées dans
 Vercel avant de tester la connexion sur le site.
 
-Pour associer plutôt le compte Auth existant `admintest@cabalou.com` à
-l'utilisateur Cabalou `Admin`, exécutez `scripts/link-supabase-admin.sql` dans
-l'éditeur SQL Supabase **après** `scripts/supabase-schema.sql`. Le script
-attribue le rôle administrateur et s'arrête explicitement si plusieurs profils
-Cabalou correspondent; résolvez alors les doublons avant de le relancer.
+Pour désactiver l'ancien compte de test `admintest@cabalou.com`, exécutez
+`scripts/link-supabase-admin.sql` dans l'éditeur SQL Supabase
+**après** `scripts/supabase-schema.sql`. Le script désactive le profil Cabalou
+correspondant et s'arrête explicitement si plusieurs profils correspondent;
+résolvez les doublons avant de le relancer.
 
 La base Supabase est indépendante de la base SQLite locale : les profils et les
 données stockés dans SQLite ne sont pas transférés automatiquement vers
